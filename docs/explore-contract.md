@@ -1,7 +1,6 @@
 # `explore()` Contract v1
 
-> Status: **DRAFT for review** (2026-08-17)  
-> Freeze after: human sign-off on T0.4  
+> Status: **FROZEN v1** (2026-08-17) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md)
 > This is the ONLY tool exposed via MCP. All other tools are hidden by default.
 
 ---
@@ -85,6 +84,7 @@ interface Slice {
   qualified_name: string;
   confidence: number;    // of the edge that led here; 1.0 for the seed
   provenance: string;
+  truncated?: boolean;   // true when max_tokens shortened this verbatim slice
 }
 
 interface BlastRadiusEntry {
@@ -166,3 +166,4 @@ No gaps. Contract covers all five command shapes.
 | version | date | change |
 |---------|------|--------|
 | v1 | 2026-08-17 | initial draft |
+| v1 (frozen) | 2026-08-17 | M1 implements `understand`/`impact`/`locate`/`debug` against tree-sitter-derived `CALLS`/`EXTENDS`/`IMPLEMENTS`/`IMPORTS` edges only (no `ENTRY_POINT` boost in `locate` — see schema.md M2 deferral). Frozen — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md). |

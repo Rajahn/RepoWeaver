@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from pathlib import Path
 
 import typer
 
 from repoweaver import __version__
+from repoweaver.graph.store import GraphStore
+from repoweaver.indexer import Indexer
+from repoweaver.protocol import inject_agents_md
 
 app = typer.Typer(
     name="fabric",
@@ -15,12 +18,27 @@ app = typer.Typer(
 )
 
 
+def _db_path(repo_root: Path) -> Path:
+    return repo_root / ".repoweaver" / "graph.db"
+
+
 @app.command()
 def build(
     repo: str = typer.Argument(".", help="Path to the repository root."),
 ) -> None:
     """Build (or rebuild) the call-graph index for a repository."""
-    print("not implemented yet")
+    repo_root = Path(repo).resolve()
+    db_path = _db_path(repo_root)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with GraphStore(db_path) as store:
+        stats = Indexer(repo_root, store).build()
+
+    print(
+        f"Indexed {stats.files} file(s): {stats.nodes} node(s), "
+        f"{stats.edges} edge(s) in {stats.elapsed_seconds:.2f}s"
+    )
+    print(f"-> {db_path}")
 
 
 @app.command()
@@ -28,7 +46,24 @@ def check(
     repo: str = typer.Argument(".", help="Path to the repository root."),
 ) -> None:
     """Check whether the index is fresh; exits non-zero if STALE."""
-    print("not implemented yet")
+    repo_root = Path(repo).resolve()
+    db_path = _db_path(repo_root)
+    if not db_path.exists():
+        print("STALE (not indexed — run: fabric build)")
+        raise typer.Exit(code=1)
+
+    with GraphStore(db_path) as store:
+        indexer = Indexer(repo_root, store)
+        fresh, stale_files = store.is_fresh(indexer.current_file_hashes())
+
+    if fresh:
+        print("OK")
+        return
+
+    print("STALE")
+    for f in stale_files:
+        print(f"  {f}")
+    raise typer.Exit(code=1)
 
 
 @app.command()
@@ -36,7 +71,15 @@ def init(
     repo: str = typer.Argument(".", help="Path to the repository root."),
 ) -> None:
     """Initialise a new RepoWeaver workspace (creates .repoweaver/ directory)."""
-    print("not implemented yet")
+    repo_root = Path(repo).resolve()
+    (repo_root / ".repoweaver").mkdir(parents=True, exist_ok=True)
+
+    agents_path = repo_root / "AGENTS.md"
+    changed = inject_agents_md(agents_path)
+
+    print(f"Workspace ready: {repo_root / '.repoweaver'}")
+    print(f"AGENTS.md {'updated' if changed else 'already up to date'}: {agents_path}")
+    print("Next: fabric build")
 
 
 @app.command()
@@ -45,7 +88,9 @@ def serve(
     port: int = typer.Option(8000, help="Port to bind the MCP server."),
 ) -> None:
     """Start the MCP server exposing the explore() tool."""
-    print("not implemented yet")
+    from repoweaver.server.mcp import mcp
+
+    mcp.run(transport="http", host=host, port=port)
 
 
 @app.command()
@@ -58,7 +103,13 @@ def verify(
     repo: str = typer.Argument(".", help="Path to the repository root."),
 ) -> None:
     """Run milestone verification suite against the index."""
-    print("not implemented yet")
+    from repoweaver.verify import run_verification
+
+    result = run_verification(level, Path(repo).resolve())
+    for line in result.report_lines:
+        print(line)
+    if not result.passed:
+        raise typer.Exit(code=1)
 
 
 @app.command()

@@ -2,7 +2,7 @@
 
 > **Code context fabric for AI coding agents** — deterministic call-graph indexing, hybrid retrieval, and a single-tool MCP interface.
 
-RepoWeaver builds a local, zero-cost code intelligence layer that lets AI coding agents (Codex, Claude Code, CodeWiz, etc.) answer structural questions without reading entire files.
+RepoWeaver builds a local, zero-cost code intelligence layer that lets AI coding agents (Codex, Claude Code, and other MCP clients) answer structural questions without reading entire files.
 
 ```
 "Who calls this method, and what would break if I change its signature?"
@@ -35,7 +35,7 @@ Six primitives, all independently validated across multiple open-source tools:
 
 | Milestone | Tag | Status |
 |-----------|-----|--------|
-| M1 — Fabric MVP (Java parser + edges + FTS5 + PageRank + MCP) | v0.1.0 | 🔜 |
+| M1 — Fabric MVP (Java parser + edges + FTS5 + PageRank + MCP) | v0.1.0 | ✅ shipped |
 | M2 — Freshness & confidence (auto-sync + disambiguation + confidence edges) | v0.2.0 | planned |
 | M3 — Type precision overlay (SCIP/jdtls) | v0.3.0 | planned |
 | M4 — Runtime overlay (OTel/Jaeger trace → edge weights) | v0.4.0 | planned |
@@ -53,14 +53,21 @@ Benchmarks use public repos only — no proprietary code enters this repository.
 | `square/okhttp` | Call-chain depth |
 | `mybatis/mybatis-3` | Generated-code noise filtering |
 
-## Install (coming in v0.1.0)
+## Install
 
 ```bash
-pip install repoweaver
-fabric build          # index current repo, $0, no LLM
-fabric init           # inject AGENTS.md protocol + edit hook
-fabric verify --level m1
+git clone <this-repo> && cd repoweaver
+uv sync --extra dev
+
+uv run fabric build /path/to/your/java/repo     # index a repo, $0, no LLM
+uv run fabric check /path/to/your/java/repo      # OK | STALE (content-hash freshness)
+uv run fabric init /path/to/your/java/repo       # inject AGENTS.md protocol block
+uv run fabric verify --level m1                  # closed-loop self-check against the bundled fixture
+uv run fabric serve                              # start the MCP server (explore() tool)
 ```
+
+v0.1.0 (M1) supports Java only, via tree-sitter. No LLM and no external network
+call is ever made at runtime — parsing, resolution, and retrieval are all local.
 
 ## MCP tool
 
@@ -71,12 +78,16 @@ explore(
   repo: str = ".",
   max_tokens: int = 4000
 ) → {
-  slices: [{file, span, source}],
-  call_paths: [...],
-  blast_radius: [...],
-  blind_spots: "DI / reflection / MQ edges not represented"
+  query, task, repo,
+  slices: [{node_id, file, span_start, span_end, source, qualified_name, confidence, provenance}],
+  stats: {nodes_visited, edges_traversed, tokens_estimated, freshness},
+  blind_spots: "<frozen incompleteness contract string>",
+  # task == "impact": + blast_radius: [{depth, node_id, qualified_name, file, edge_type, confidence, risk}]
+  # task == "debug":  + call_path: [{step, node_id, qualified_name, file, edge_type, confidence}]
 }
 ```
+
+See [`docs/explore-contract.md`](docs/explore-contract.md) (frozen v1) for the full contract.
 
 ## Acknowledgements
 

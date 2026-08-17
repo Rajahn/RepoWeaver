@@ -4,6 +4,8 @@ import os
 
 from fastmcp import FastMCP
 
+from repoweaver.explore import explore as _explore
+
 mcp = FastMCP("RepoWeaver")
 
 
@@ -17,24 +19,14 @@ def explore(
     min_confidence: float = 0.5,
 ) -> dict:
     """Code context fabric: symbols, call paths, blast radius. task: understand|impact|locate|debug"""
-    return {
-        "query": query,
-        "task": task,
-        "slices": [],
-        "stats": {
-            "nodes_visited": 0,
-            "edges_traversed": 0,
-            "tokens_estimated": 0,
-            "freshness": "ok",
-        },
-        "blind_spots": (
-            "Static analysis only. Not represented: Spring bean injection dispatch beyond "
-            "declared type, MQ listener call targets, reflection, config-driven routing, "
-            "generated code (MyBatis Example, etc.). "
-            "'No callers found' != dead code. Always verify with grep/source before concluding."
-        ),
-        "_note": "stub — run `fabric build` first",
-    }
+    return _explore(
+        query=query,
+        task=task,
+        repo=repo,
+        max_tokens=max_tokens,
+        depth=depth,
+        min_confidence=min_confidence,
+    )
 
 
 # Hidden diagnostic tools — enabled via FABRIC_MCP_TOOLS env var
@@ -45,12 +37,34 @@ if "status" in _extra_tools:
     @mcp.tool()
     def status(repo: str = ".") -> dict:
         """Index status, freshness, last build time."""
-        return {"status": "stub"}
+        from pathlib import Path
+
+        from repoweaver.explore import db_path_for
+        from repoweaver.graph.store import GraphStore
+        from repoweaver.indexer import Indexer
+
+        db_path = db_path_for(repo)
+        if not db_path.exists():
+            return {"indexed": False}
+        with GraphStore(db_path) as store:
+            indexer = Indexer(Path(repo).resolve(), store)
+            fresh, stale = store.is_fresh(indexer.current_file_hashes())
+            return {"indexed": True, "fresh": fresh, "stale_files": stale, **store.stats()}
 
 
 if "reindex" in _extra_tools:
 
     @mcp.tool()
     def reindex(repo: str = ".", full: bool = False) -> dict:
-        """Trigger incremental or full rebuild."""
-        return {"status": "stub"}
+        """Trigger a full rebuild (incremental rebuild is an M2 feature)."""
+        from pathlib import Path
+
+        from repoweaver.explore import db_path_for
+        from repoweaver.graph.store import GraphStore
+        from repoweaver.indexer import Indexer
+
+        db_path = db_path_for(repo)
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with GraphStore(db_path) as store:
+            stats = Indexer(Path(repo).resolve(), store).build()
+            return {"files": stats.files, "nodes": stats.nodes, "edges": stats.edges}

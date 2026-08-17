@@ -6,6 +6,7 @@ three rules it needs to use the `explore()` MCP tool correctly.
 
 ---
 
+<!-- repoweaver:start -->
 ## RepoWeaver Code-Context Rules
 
 ### 1. Freshness Gate
@@ -56,3 +57,4 @@ The graph is built from **static analysis only**. The following patterns are
 
 *This template is maintained by RepoWeaver. Do not edit the three numbered sections
 above; they reflect the current incompleteness contract of the static analyser.*
+<!-- repoweaver:end -->

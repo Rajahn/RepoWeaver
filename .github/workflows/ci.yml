@@ -25,3 +25,9 @@ jobs:
 
       - name: Test
         run: pytest tests/ -v
+
+      - name: M1 acceptance gate
+        run: fabric verify --level m1
+
+      - name: Public-source leak scan
+        run: python scripts/check_public.py
