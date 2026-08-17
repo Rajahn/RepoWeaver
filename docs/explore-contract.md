@@ -1,167 +1,168 @@
-# `explore()` Tool Contract
+# `explore()` Contract v1
 
-This document specifies the public interface of the `explore()` MCP tool
-exposed by the RepoWeaver server. Agents and integrators should treat this
-document as the authoritative contract; the implementation in
-`src/repoweaver/server/mcp.py` must conform to it.
+> Status: **DRAFT for review** (2026-08-17)  
+> Freeze after: human sign-off on T0.4  
+> This is the ONLY tool exposed via MCP. All other tools are hidden by default.
 
 ---
 
-## Function Signature
+## Signature
 
 ```python
 def explore(
     query: str,
-    task: str = "understand",
+    task: Literal["understand", "impact", "locate", "debug"] = "understand",
     repo: str = ".",
     max_tokens: int = 4000,
     depth: int = 2,
     min_confidence: float = 0.5,
-) -> dict: ...
+) -> ExploreResult:
+    ...
 ```
 
 ### Parameters
 
-| Parameter | Type | Default | Description |
-|---|---|---|---|
-| `query` | `str` | *(required)* | Symbol name, qualified name, or natural-language description |
-| `task` | `str` | `"understand"` | Query mode — see Task Modes below |
-| `repo` | `str` | `"."` | Path to repository root (absolute or CWD-relative) |
-| `max_tokens` | `int` | `4000` | Soft budget for the response payload in tokens |
-| `depth` | `int` | `2` | Maximum graph-traversal depth from seed nodes |
-| `min_confidence` | `float` | `0.5` | Minimum edge confidence threshold (0.0–1.0) |
+| param | type | description |
+|-------|------|-------------|
+| `query` | str | Natural-language or symbol-name query. Examples: `"who calls submitDuty"`, `"OrderService#place"`, `"authentication flow"` |
+| `task` | enum | See Task Modes below |
+| `repo` | str | Repo root path. Default `.` (cwd). Supports multiple indexed repos via absolute path |
+| `max_tokens` | int | Soft budget for combined source slices in response. Default 4000 |
+| `depth` | int | Graph diffusion hop depth. Default 2. Max 4 |
+| `min_confidence` | float | Edge confidence threshold. Default 0.5 |
 
 ---
 
 ## Task Modes
 
-| Mode | Description |
-|---|---|
-| `understand` | Return symbol definition, direct callers, callees, and type hierarchy. Default mode. |
-| `impact` | Blast-radius analysis: all transitive callers within `depth` hops. |
-| `locate` | Best-match symbol lookup — useful when the exact qualified name is unknown. |
-| `debug` | Call-path tracing between two symbols (supply `query` as `"A -> B"`). |
+| task | what it does | primary graph operation |
+|------|-------------|------------------------|
+| `understand` | Return symbol slices + immediate call context | FTS seed → 1-hop neighbours → verbatim source slices, sorted by PageRank |
+| `impact` | Return blast radius of changing a symbol | Reverse BFS from seed: all callers up to `depth` hops + confidence-weighted risk level |
+| `locate` | Find where a behaviour lives; return ranked candidates | FTS + graph diffusion; emphasise entry-point nodes |
+| `debug` | Trace a call path from A to B | Shortest path in call graph + slices along path |
 
 ---
 
-## Response Structure
+## Response schema
 
 ```typescript
-interface ExploreResponse {
+interface ExploreResult {
   query: string;
   task: string;
+  repo: string;
+
+  // Ranked list of source slices
   slices: Slice[];
-  stats: Stats;
-  blind_spots: string;   // fixed string — see below
-  _note?: string;        // present only when index is absent or stale
+
+  // For task=impact: callers by depth
+  blast_radius?: BlastRadiusEntry[];
+
+  // For task=debug: call path
+  call_path?: CallPathEntry[];
+
+  // Disambiguation: populated when query matched >1 symbol
+  candidates?: Candidate[];
+
+  // Stats
+  stats: {
+    nodes_visited: number;
+    edges_traversed: number;
+    tokens_estimated: number;
+    freshness: "ok" | "stale";   // stale → agent must run `fabric build` first
+  };
+
+  // MANDATORY — always present, never omitted
+  blind_spots: string;  // fixed string (see below)
 }
 
 interface Slice {
   node_id: string;
+  file: string;
+  span_start: number;
+  span_end: number;
+  source: string;        // verbatim source lines, trimmed to max_tokens budget
   qualified_name: string;
-  simple_name: string;
-  kind: string;             // method | class | interface | field | constructor
-  file: string;             // repo-relative path
-  span_start: number;       // byte offset
-  span_end: number;         // byte offset
-  score: float;             // combined retrieval score
-  callers?: Candidate[];    // present for task=understand|impact
-  callees?: Candidate[];    // present for task=understand
-  blast_radius?: BlastRadiusEntry[];   // present for task=impact
-  call_path?: CallPathEntry[];         // present for task=debug
+  confidence: number;    // of the edge that led here; 1.0 for the seed
+  provenance: string;
+}
+
+interface BlastRadiusEntry {
+  depth: number;
+  node_id: string;
+  qualified_name: string;
+  file: string;
+  edge_type: string;
+  confidence: number;
+  risk: "will_break" | "likely_affected" | "possible";
+}
+
+interface CallPathEntry {
+  step: number;
+  node_id: string;
+  qualified_name: string;
+  file: string;
+  span_start: number;
+  edge_type: string;
+  confidence: number;
 }
 
 interface Candidate {
   node_id: string;
   qualified_name: string;
-  confidence: float;
-  edge_type: string;
-}
-
-interface BlastRadiusEntry {
-  node_id: string;
-  qualified_name: string;
-  depth: number;            // hops from seed
-  confidence: float;        // product of edge confidences along path
-}
-
-interface CallPathEntry {
-  from_id: string;
-  to_id: string;
-  edge_type: string;
-  confidence: float;
   file: string;
-  line: number;
-}
-
-interface Stats {
-  nodes_visited: number;
-  edges_traversed: number;
-  tokens_estimated: number;
-  freshness: "ok" | "stale" | "missing";
+  score: number;
 }
 ```
 
----
-
-## `blind_spots` — Fixed String
-
-The `blind_spots` field always contains exactly the following text:
+### `blind_spots` fixed value (MUST NOT be modified by the server)
 
 ```
 Static analysis only. Not represented: Spring bean injection dispatch beyond
 declared type, MQ listener call targets, reflection, config-driven routing,
-generated code (MyBatis Example, etc.).
-'No callers found' != dead code. Always verify with grep/source before concluding.
+generated code (MyBatis Example, etc.). "No callers found" ≠ dead code.
+Always verify with grep/source before concluding.
 ```
 
-Agents **must not** suppress or truncate this field.
+---
+
+## Error / freshness behaviour
+
+| condition | behaviour |
+|-----------|-----------|
+| `stats.freshness == "stale"` | Result still returned, but `freshness` field is `"stale"`. Agent MUST re-run `fabric build` before acting on result |
+| Repo not indexed | Error: `{"error": "not_indexed", "hint": "run: fabric build"}` |
+| No results above `min_confidence` | `slices: []`, `blind_spots` still present |
+| Multiple candidates, unresolved | `slices: []`, `candidates` populated with ranked list |
 
 ---
 
-## Error and Freshness Behaviour
+## Hidden tools (available via env `FABRIC_MCP_TOOLS=status,reindex,debug_graph`)
 
-| Condition | `stats.freshness` | `_note` present | `slices` |
-|---|---|---|---|
-| Index present and fresh | `"ok"` | No | Populated |
-| Index present but stale | `"stale"` | Yes | Populated (may be stale) |
-| Index missing | `"missing"` | Yes (`"stub — run \`fabric build\` first"`) | `[]` |
-| `repo` path not found | — | — | Raises `ValueError` |
-
----
-
-## Hidden Tools
-
-Two additional diagnostic tools are available when the `FABRIC_MCP_TOOLS`
-environment variable contains their names (comma-separated):
-
-| Tool | Activation | Description |
-|---|---|---|
-| `status` | `FABRIC_MCP_TOOLS=status` | Index status, freshness, last build time |
-| `reindex` | `FABRIC_MCP_TOOLS=reindex` | Trigger incremental or full index rebuild |
-
-These tools are intentionally hidden from the default tool list to keep the
-agent's context window clean.
+| tool | purpose |
+|------|---------|
+| `status` | Index stats, freshness, last build time |
+| `reindex` | Trigger incremental or full rebuild |
+| `debug_graph` | Raw node/edge dump for a symbol (diagnosis only) |
 
 ---
 
-## Graft Five-Command Coverage Mapping
+## Coverage of Graft's five commands (gap check)
 
-RepoWeaver is designed to subsume the five core Graft commands via the single
-`explore()` tool. The mapping is:
+| Graft command | Covered by `explore()` | how |
+|--------------|----------------------|-----|
+| `graft ask` | ✅ | `task=understand` or `task=locate` |
+| `graft callers` | ✅ | `task=impact` (reverse BFS) |
+| `graft skeleton` | ✅ | `task=understand` with file path in query → slices = API surface |
+| `graft map` | ✅ | `task=locate` with broad query → PageRank highlights hubs |
+| `graft grep` | ✅ | literal query string triggers FTS exhaustive match |
 
-| Graft Command | `explore()` Equivalent | Coverage |
-|---|---|---|
-| `graft symbols <query>` | `explore(query, task="locate")` | ✅ |
-| `graft callers <symbol>` | `explore(symbol, task="understand")` → `slices[].callers` | ✅ |
-| `graft callees <symbol>` | `explore(symbol, task="understand")` → `slices[].callees` | ✅ |
-| `graft impact <symbol>` | `explore(symbol, task="impact")` → `slices[].blast_radius` | ✅ |
-| `graft path <A> <B>` | `explore("A -> B", task="debug")` → `slices[].call_path` | ✅ |
+No gaps. Contract covers all five command shapes.
 
 ---
 
 ## Changelog
 
-| Version | Date | Notes |
-|---|---|---|
-| 0.0.1-dev | 2026-08-17 | Initial contract — stub implementation, full spec |
+| version | date | change |
+|---------|------|--------|
+| v1 | 2026-08-17 | initial draft |
