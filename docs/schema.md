@@ -1,55 +1,45 @@
-# RepoWeaver Graph Schema
+# Schema v1 — RepoWeaver Evidence Graph
 
-This document describes the SQLite schema used by RepoWeaver to store the
-call-graph index. The authoritative DDL is in
-[`src/repoweaver/graph/schema.sql`](../src/repoweaver/graph/schema.sql).
+> Status: **DRAFT for review** (2026-08-17)  
+> Freeze after: human sign-off on T0.3  
+> Rule: once frozen, all downstream tables/queries must migrate in place; no silent drops.
+
+---
+
+## Rationale
+
+Every fact in the graph must be traceable to its source and measurable for staleness.
+Three tables; nothing more until M3.
 
 ---
 
 ## Tables
 
-### `node` — Indexed Symbols
+### `node`
 
 ```sql
-CREATE TABLE IF NOT EXISTS node (
-    id              TEXT    PRIMARY KEY,
-    kind            TEXT    NOT NULL,
-    language        TEXT    NOT NULL DEFAULT 'java',
-    repo            TEXT    NOT NULL DEFAULT '',
-    file            TEXT    NOT NULL DEFAULT '',
-    span_start      INTEGER NOT NULL DEFAULT 0,
-    span_end        INTEGER NOT NULL DEFAULT 0,
-    qualified_name  TEXT    NOT NULL DEFAULT '',
-    simple_name     TEXT    NOT NULL DEFAULT '',
-    signature       TEXT    NOT NULL DEFAULT '',
-    commit_hash     TEXT    NOT NULL DEFAULT '',
-    indexed_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+CREATE TABLE node (
+    id             TEXT    PRIMARY KEY,          -- "{kind}:{repo}:{file}:{qualified_name}"
+    kind           TEXT    NOT NULL,             -- class | interface | method | field | enum | enum_constant
+    language       TEXT    NOT NULL DEFAULT 'java',
+    repo           TEXT    NOT NULL,             -- repo root path (local absolute)
+    file           TEXT    NOT NULL,             -- repo-relative path, e.g. "src/.../Foo.java"
+    span_start     INTEGER NOT NULL,             -- 1-based line, inclusive
+    span_end       INTEGER NOT NULL,             -- 1-based line, inclusive
+    qualified_name TEXT    NOT NULL,             -- "com.example.Foo#bar(String)"
+    simple_name    TEXT    NOT NULL,             -- "bar"  (FTS anchor)
+    signature      TEXT,                         -- return type + param types, normalised
+    commit_hash    TEXT,                         -- git HEAD at index time; NULL if not a git repo
+    indexed_at     INTEGER NOT NULL              -- unix epoch seconds
 );
-```
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | TEXT PK | Stable hash of `(repo, file, qualified_name)` |
-| `kind` | TEXT | `method` \| `class` \| `interface` \| `field` \| `constructor` |
-| `language` | TEXT | Source language (default: `java`) |
-| `repo` | TEXT | Repository root path or remote URL |
-| `file` | TEXT | Repo-relative source path |
-| `span_start` | INTEGER | Byte offset of declaration start |
-| `span_end` | INTEGER | Byte offset of declaration end |
-| `qualified_name` | TEXT | Fully-qualified symbol name |
-| `simple_name` | TEXT | Unqualified symbol name |
-| `signature` | TEXT | Method signature or class header |
-| `commit_hash` | TEXT | Git commit at index time |
-| `indexed_at` | TEXT | ISO-8601 UTC timestamp |
+CREATE INDEX node_file     ON node(repo, file);
+CREATE INDEX node_qname    ON node(qualified_name);
+CREATE INDEX node_simple   ON node(simple_name);
 
-**Indexes:**
-- `idx_node_file` on `(file)`
-- `idx_node_qname` on `(qualified_name)`
-- `idx_node_simple` on `(simple_name)`
-
-**FTS virtual table:**
-```sql
-CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5 (
+-- FTS5 for BM25 retrieval
+CREATE VIRTUAL TABLE node_fts USING fts5(
+    id UNINDEXED,
     simple_name,
     qualified_name,
     signature,
@@ -58,123 +48,110 @@ CREATE VIRTUAL TABLE IF NOT EXISTS node_fts USING fts5 (
 );
 ```
 
+**id convention**: `{kind}:{repo_slug}:{file_path}:{qualified_name}`  
+Example: `method:repoweaver:src/main/java/com/example/Foo.java:com.example.Foo#bar(String)`
+
+**Disambiguation rule (v1)**: when the same `simple_name` appears in ≥2 files, ALL candidates are retained; none is silently dropped. The `edge` table records which candidates were ambiguous at resolution time (see `edge.ambiguous_candidates`).
+
 ---
 
-### `edge` — Directed Relationships
+### `edge`
 
 ```sql
-CREATE TABLE IF NOT EXISTS edge (
-    id                   TEXT    PRIMARY KEY,
+CREATE TABLE edge (
+    id                   TEXT    PRIMARY KEY,   -- sha256("{from_id}|{to_id}|{type}")[:16]
     from_id              TEXT    NOT NULL REFERENCES node(id),
     to_id                TEXT    NOT NULL REFERENCES node(id),
-    type                 TEXT    NOT NULL,
-    provenance           TEXT    NOT NULL DEFAULT 'static',
-    confidence           REAL    NOT NULL DEFAULT 1.0
-                             CHECK (confidence BETWEEN 0 AND 1),
-    observed_at          TEXT    NOT NULL DEFAULT (datetime('now')),
-    source_hash          TEXT    NOT NULL DEFAULT '',
-    ambiguous_candidates TEXT    NOT NULL DEFAULT '[]'
+    type                 TEXT    NOT NULL,      -- see Edge Types below
+    provenance           TEXT    NOT NULL,      -- see Provenance below
+    confidence           REAL    NOT NULL       -- 0.0–1.0; see Confidence below
+                         CHECK(confidence BETWEEN 0.0 AND 1.0),
+    observed_at          INTEGER NOT NULL,      -- unix epoch seconds
+    source_hash          TEXT    NOT NULL,      -- hash of source file at index time
+    ambiguous_candidates TEXT                   -- JSON array of candidate node ids, if resolution was ambiguous
 );
+
+CREATE INDEX edge_from ON edge(from_id);
+CREATE INDEX edge_to   ON edge(to_id);
+CREATE INDEX edge_type ON edge(type);
 ```
-
-| Column | Type | Description |
-|---|---|---|
-| `id` | TEXT PK | Stable hash of `(from_id, to_id, type)` |
-| `from_id` | TEXT FK | Source node id |
-| `to_id` | TEXT FK | Target node id |
-| `type` | TEXT | Edge type (see table below) |
-| `provenance` | TEXT | `static` \| `inferred` \| `manual` |
-| `confidence` | REAL | 0.0–1.0; enforced by `CHECK` constraint |
-| `observed_at` | TEXT | ISO-8601 UTC timestamp |
-| `source_hash` | TEXT | Hash of source file at index time |
-| `ambiguous_candidates` | TEXT | JSON array of alternative `to_id` values |
-
-**Indexes:**
-- `idx_edge_from` on `(from_id)`
-- `idx_edge_to` on `(to_id)`
 
 #### Edge Types
 
-| Type | Default Confidence | Description |
-|---|---|---|
-| `calls` | 1.0 | Direct method invocation |
-| `implements` | 1.0 | Class implements interface |
-| `extends` | 1.0 | Class or interface inheritance |
-| `overrides` | 0.95 | Method override (resolved at parse time) |
-| `uses_field` | 0.9 | Read or write access to a field |
-| `throws` | 1.0 | Declared or inferred exception |
-| `annotated_by` | 1.0 | Symbol carries an annotation |
-| `instantiates` | 0.9 | `new Foo(…)` constructor call |
+| type | meaning | default confidence |
+|------|---------|--------------------|
+| `CALLS` | method A calls method B (textual resolution) | 0.70 |
+| `CALLS_TYPED` | A calls B (type-resolved via SCIP/jdtls, M3) | 0.95 |
+| `IMPORTS` | file A imports symbol B | 1.00 |
+| `EXTENDS` | class A extends class B | 1.00 |
+| `IMPLEMENTS` | class A implements interface B | 1.00 |
+| `ROUTES_TO` | framework route → handler (Spring MVC, etc.) | 0.80 |
+| `ENTRY_POINT` | node is a known entry (REST/MQ/scheduled, M2) | 1.00 |
+| `RUNTIME_CALLS` | observed in OTel/Jaeger trace (M4) | 1.00 |
 
-#### Provenance Values
+> **Nakedness rule**: no edge may be stored without `provenance` and `confidence`. Assertion in the insert path.
 
-| Value | Meaning |
-|---|---|
-| `static` | Resolved deterministically by the tree-sitter parser |
-| `inferred` | Heuristically resolved (e.g. type-hierarchy lookup) |
-| `manual` | Added by a human or post-processor |
+#### Provenance values
+
+| value | meaning |
+|-------|---------|
+| `tree_sitter_java` | extracted by tree-sitter Java grammar |
+| `scip_java` | extracted from scip-java index (M3) |
+| `jdtls` | extracted from jdtls LSP response (M3) |
+| `otel_trace` | observed in OpenTelemetry trace (M4) |
+| `rule_entry_point` | matched by annotation/pattern rule (M2) |
 
 ---
 
-### `evidence` — Parser-Level Evidence
+### `evidence`
 
 ```sql
-CREATE TABLE IF NOT EXISTS evidence (
+CREATE TABLE evidence (
     id                  TEXT    PRIMARY KEY,
     edge_id             TEXT    NOT NULL REFERENCES edge(id),
-    file                TEXT    NOT NULL DEFAULT '',
-    line                INTEGER NOT NULL DEFAULT 0,
-    parser_version      TEXT    NOT NULL DEFAULT '',
-    freshness_ts        TEXT    NOT NULL DEFAULT (datetime('now')),
-    verification_status TEXT    NOT NULL DEFAULT 'verified'
-                            CHECK (verification_status IN ('verified', 'stale', 'ambiguous'))
+    file                TEXT    NOT NULL,
+    line                INTEGER NOT NULL,
+    parser_version      TEXT    NOT NULL,   -- e.g. "tree-sitter-java 0.23.4"
+    freshness_ts        INTEGER NOT NULL,   -- unix epoch seconds of file mtime at index time
+    verification_status TEXT    NOT NULL    -- verified | stale | ambiguous
+                        CHECK(verification_status IN ('verified','stale','ambiguous'))
 );
+
+CREATE INDEX evidence_edge ON evidence(edge_id);
 ```
 
-| Column | Type | Description |
-|---|---|---|
-| `id` | TEXT PK | Stable hash of `(edge_id, file, line)` |
-| `edge_id` | TEXT FK | Parent edge id |
-| `file` | TEXT | Repo-relative source path |
-| `line` | INTEGER | 1-based line number of the call site |
-| `parser_version` | TEXT | tree-sitter grammar version used |
-| `freshness_ts` | TEXT | ISO-8601 UTC timestamp of last verification |
-| `verification_status` | TEXT | `verified` \| `stale` \| `ambiguous` |
+---
 
-**Index:**
-- `idx_evidence_edge` on `(edge_id)`
+## Freshness model
+
+Content hash → staleness:
+
+```
+file_hash = sha256(file_content)
+node/edge are stale when: stored source_hash ≠ current file_hash
+fabric check → STALE if any node/edge in repo has stale source_hash
+```
+
+Rebuild is incremental: only nodes/edges with changed `source_hash` are re-extracted.  
+Auto-sync (M2): OS file-event watcher triggers incremental rebuild with 2s debounce.
 
 ---
 
-## Freshness Model
+## Blind spots (mandatory in every `explore()` response)
 
-An index is **fresh** when all of these conditions hold:
+Static analysis over this schema CANNOT represent:
+- Calls dispatched through injected Spring beans (beyond the declared type)
+- Message-queue listeners as call targets
+- Reflection-based invocation
+- Configuration-driven routing (without M2 entry-point rules)
+- Generated code call chains (MyBatis Example methods, etc.)
 
-1. Every `node.commit_hash` matches the current `HEAD` of the repository.
-2. No `evidence.verification_status = 'stale'` rows exist.
-3. The last full build completed without errors.
-
-`fabric check` evaluates these conditions and prints `OK` or `STALE`.
-
----
-
-## Blind Spots
-
-The schema stores only what static analysis can resolve. The following
-categories of dynamic dispatch are **not represented**:
-
-- Spring / CDI bean injection beyond declared type
-- MQ listener call targets (runtime binding)
-- Reflection (`Class.forName`, `Method.invoke`, etc.)
-- Config-driven routing (`@ConditionalOnProperty`, etc.)
-- Generated code (MyBatis Example, Lombok, APT, etc.)
-
-> **"No callers found" ≠ dead code.**
+`explore()` MUST append a `blind_spots` field to every response, verbatim.
 
 ---
 
-## Changelog
+## Schema changelog
 
-| Version | Date | Notes |
-|---|---|---|
-| 0.0.1-dev | 2026-08-17 | Initial schema — three tables, FTS5, indexes |
+| version | date | change |
+|---------|------|--------|
+| v1 | 2026-08-17 | initial draft |
