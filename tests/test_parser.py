@@ -73,6 +73,18 @@ def test_import_extraction():
     assert not imp.is_static
 
 
+def test_annotation_declaration_is_a_symbol(tmp_path: Path):
+    source = tmp_path / "Marker.java"
+    source.write_text(
+        'package demo; public @interface Marker { String value() default ""; }',
+        encoding="utf-8",
+    )
+    parsed = JavaParser(tmp_path).parse_file(source)
+    annotation = next(node for node in parsed.nodes if node.kind == "annotation")
+    assert annotation.qualified_name == "demo.Marker"
+    assert annotation.simple_name == "Marker"
+
+
 def test_calls_extraction():
     files = _parse_all()
     app = files["com/example/demo/App.java"]

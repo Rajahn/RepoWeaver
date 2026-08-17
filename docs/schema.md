@@ -1,6 +1,6 @@
-# Schema v1 — RepoWeaver Evidence Graph
+# Schema v1.1 — RepoWeaver Evidence Graph
 
-> Status: **FROZEN v1** (2026-08-17) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md)
+> Status: **FROZEN v1.1** (2026-08-18) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md) and [ADR-0002](adr/0002-m2-resolution-and-freshness.md)
 > Rule: once frozen, all downstream tables/queries must migrate in place; no silent drops.
 
 ---
@@ -8,7 +8,9 @@
 ## Rationale
 
 Every fact in the graph must be traceable to its source and measurable for staleness.
-Three tables; nothing more until M3.
+Core facts live in `node`, `edge`, and `evidence`. M2 adds
+`unresolved_reference` (ambiguity is not an edge), `file_meta` (freshness),
+and `file_refs_cache` (parse-incremental/global-resolution correctness).
 
 ---
 
@@ -29,7 +31,9 @@ CREATE TABLE node (
     simple_name    TEXT    NOT NULL,             -- "bar"  (FTS anchor)
     signature      TEXT,                         -- return type + param types, normalised
     commit_hash    TEXT,                         -- git HEAD at index time; NULL if not a git repo
-    indexed_at     INTEGER NOT NULL              -- unix epoch seconds
+    indexed_at     INTEGER NOT NULL,             -- unix epoch seconds
+    is_entry_point INTEGER NOT NULL DEFAULT 0,
+    entry_point_kind TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX node_file     ON node(repo, file);
@@ -68,7 +72,11 @@ END;
 **id convention**: `{kind}:{repo_slug}:{file_path}:{qualified_name}`
 Example: `method:repoweaver:src/main/java/com/example/Foo.java:com.example.Foo#bar(String)`
 
-**Disambiguation rule (v1)**: when the same `simple_name` appears in ≥2 files, ALL candidates are retained; none is silently dropped. The `edge` table records which candidates were ambiguous at resolution time (see `edge.ambiguous_candidates`).
+**Disambiguation rule (v1.1)**: a uniquely resolved relation becomes an
+`edge`; multiple equally valid candidates are stored in `unresolved_reference`
+and never counted as resolved coverage. The legacy
+`edge.ambiguous_candidates` column remains for backward compatibility and is
+empty on the v1.1 resolver path.
 
 **id stability note**: `id` is deterministic (derived from `qualified_name`, not a rowid), so re-indexing an unchanged symbol produces the same `id` and updates the row in place instead of delete+insert. This is what makes edges pointing *into* a symbol from files that were not re-indexed in the same build survive a partial rebuild. See ADR-0001 §3 for the full replace-by-file algorithm.
 
@@ -105,13 +113,17 @@ CREATE INDEX edge_type ON edge(type);
 |------|---------|--------------------|
 | `CALLS` | method A calls method B (textual resolution) | 0.70 |
 | `CALLS_TYPED` | A calls B (type-resolved via SCIP/jdtls, M3) | 0.95 |
-| `IMPORTS` | file A imports symbol B | 1.00 |
+| `IMPORTS` | file A imports symbol B (including static-import owner types) | 1.00 |
+| `REFERENCES` | a signature/body/annotation uses a uniquely resolved type | 0.95 |
 | `EXTENDS` | class A extends class B | 1.00 |
 | `IMPLEMENTS` | class A implements interface B | 1.00 |
 | `ROUTES_TO` | framework route → handler (Spring MVC, etc.) | 0.80 |
 | `RUNTIME_CALLS` | observed in OTel/Jaeger trace (M4) | 1.00 |
 
-**`ENTRY_POINT` correction (v1 fix, M2-deferred).** The original draft modeled "is an entry point" as an edge type, but entry-ness is a *property of one node*, not a relation between two — an edge type needs a `from_id` and a distinct `to_id`, and a self-loop (`from_id == to_id`) is a workaround, not a model. `ENTRY_POINT` is therefore **removed from the edge-type enum** and reserved instead as a future node attribute: `node.is_entry_point BOOLEAN NOT NULL DEFAULT 0`, to be added as an additive column in M2 alongside `rule_entry_point` provenance. M1 ships no entry-point detection at all — `explore(task="locate")` ranks by BM25 + PageRank only, with no entry-point boost, and this is called out explicitly rather than left as a silent gap.
+**Entry points (v1.1).** Entry-ness is a node property, never a self-loop.
+`is_entry_point` and `entry_point_kind` are populated from recognized HTTP,
+scheduled and message-listener annotations. This marks externally invoked
+symbols without pretending static analysis knows their runtime callers.
 
 > **Nakedness rule**: no edge may be stored without `provenance` and `confidence`. Assertion in the insert path.
 
@@ -161,8 +173,20 @@ CREATE TABLE file_meta (
 ```
 
 `fabric check` recomputes the hash of every `*.java` file under the repo and compares it against
-`file_meta.content_hash`; any file that is new, changed, or removed since the last `fabric build`
+`file_meta.content_hash`; any file that is new, changed, or removed since the last build/sync
 marks the repo `STALE`.
+
+### `unresolved_reference` (v1.1)
+
+Stores `(from_id, type, target_name, candidates, reason, file, line,
+site_count)` for references that cannot be uniquely resolved. Candidate sets
+are diagnostic evidence, not graph edges.
+
+### `file_refs_cache` (v1.1)
+
+Stores `(file, content_hash, payload)` where payload is deterministic raw parser
+output. Watch mode reparses changed files, reuses unchanged payloads, and still
+runs global resolution over every current file.
 
 ---
 
@@ -176,8 +200,10 @@ node/edge are stale when: stored source_hash ≠ current file_hash
 fabric check → STALE if any node/edge in repo has stale source_hash
 ```
 
-Rebuild is incremental: only nodes/edges with changed `source_hash` are re-extracted.
-Auto-sync (M2): OS file-event watcher triggers incremental rebuild with 2s debounce.
+M2 reparses only changed files using `file_refs_cache`, then globally
+re-resolves the current symbol table. `fabric watch` uses OS file events and a
+2-second debounce. Delete/rename batches are accepted only when their canonical
+graph hash equals a clean full rebuild.
 
 ---
 
@@ -187,7 +213,7 @@ Static analysis over this schema CANNOT represent:
 - Calls dispatched through injected Spring beans (beyond the declared type)
 - Message-queue listeners as call targets
 - Reflection-based invocation
-- Configuration-driven routing (without M2 entry-point rules)
+- Configuration-driven routing
 - Generated code call chains (MyBatis Example methods, etc.)
 
 `explore()` MUST append a `blind_spots` field to every response, verbatim.
@@ -199,4 +225,5 @@ Static analysis over this schema CANNOT represent:
 | version | date | change |
 |---------|------|--------|
 | v1 | 2026-08-17 | initial draft |
-| v1 (frozen) | 2026-08-17 | Added FTS5 sync triggers; added `ON DELETE CASCADE` on `edge`/`evidence` FKs + replace-by-file algorithm; removed `ENTRY_POINT` edge type (deferred to M2 as a node attribute); added `file_meta` table for freshness. Frozen — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md). |
+| v1 (frozen) | 2026-08-17 | FTS5 triggers, cascade-safe replace-by-file, file freshness. See ADR-0001. |
+| v1.1 (frozen) | 2026-08-18 | Additive entry-point columns, `unresolved_reference`, `file_refs_cache`, `REFERENCES`, annotation symbols and parse-incremental/global-resolution semantics. See ADR-0002. |

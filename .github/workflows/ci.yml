@@ -32,5 +32,8 @@ jobs:
       - name: Benchmark semantics gate
         run: fabric verify --level benchmark
 
+      - name: M2 freshness and consistency gate
+        run: fabric verify --level m2
+
       - name: Public-source leak scan
         run: python scripts/check_public.py

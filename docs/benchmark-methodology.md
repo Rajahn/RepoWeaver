@@ -16,8 +16,10 @@ RepoWeaver therefore calls an edge **resolved** only when:
 2. `ambiguous_candidates == []`.
 
 `cross_file_dependent_coverage` counts a symbol-bearing file only when at least
-one resolved edge reaches a node in that file from another file. Coverage must
-always be read together with:
+one resolved edge reaches a node in that file from another file. When scope
+prefixes are supplied, **both source and target files** must be in scope. This
+prevents test-only dependents from inflating a production-source benchmark.
+Coverage must always be read together with:
 
 - `ambiguous_edge_rate`;
 - fixture `edge_precision` and `edge_recall`;
@@ -57,12 +59,13 @@ semantics, correctness scoring and the gate mechanism without network access.
 
 ## SOTA references
 
-CodeGraph publishes 93.3% Java cross-file coverage on Gson. Its definition is
-close to RepoWeaver's file-level coverage metric, but the tools' ambiguity and
-confidence policies have not yet been audited side by side on the same pinned
-commit. We record 0.933 as a directional reference, while our own release gate
-requires both coverage >= 0.90 and ambiguity <= 0.10 plus fixture precision and
-recall thresholds.
+CodeGraph publishes 93.3% Java cross-file coverage on Gson. We also ran
+CodeGraph 1.5.0 and RepoWeaver 0.2.0 on pinned commit `dae37cf…` with the same
+`gson/src/main/` scope and both endpoints constrained to that scope. Measured
+coverage was 92.59% vs 90.12%. RepoWeaver additionally gates ambiguity at
+<=10% (measured 6.36%) and fixture precision/recall. The published 93.3% remains
+a directional historical reference; the checked-in same-commit reports are the
+operational comparison.
 
 ## Adapters
 
@@ -81,6 +84,7 @@ RepoWeaver never vendors or copies third-party implementations.
 fabric benchmark run \
   --repo /path/to/pinned/repo \
   --name gson-candidate \
+  --scope-prefix gson/src/main/ \
   --output results/gson.json
 
 fabric benchmark compare \

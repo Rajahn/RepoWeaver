@@ -3,6 +3,7 @@ package com.example.overloads;
 public class Caller {
     void run(Codec codec, String json, Object something) {
         codec.fromJson(json, Foo.class);
+        codec.fromJson(json, Tokens.get(String.class));
         codec.write(null);
         codec.tag((String) something);
         codec.accept(new Foo());

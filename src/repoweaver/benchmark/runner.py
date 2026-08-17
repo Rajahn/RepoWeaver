@@ -18,13 +18,16 @@ def run_benchmark(
     name: str,
     adapter: str = "repoweaver",
     ground_truth: Path | None = None,
+    scope_prefixes: list[str] | None = None,
 ) -> dict:
     repo_root = Path(repo).resolve()
 
     with tempfile.TemporaryDirectory(prefix="repoweaver-benchmark-") as tmp:
         workdir = Path(tmp)
         try:
-            metrics = build_adapter(adapter).run(repo_root, name, workdir)
+            metrics = build_adapter(adapter).run(
+                repo_root, name, workdir, scope_prefixes
+            )
         except AdapterSkipped as exc:
             return {
                 "name": name,

@@ -52,10 +52,10 @@ def _open(repo: Path) -> GraphStore:
 
 
 class TestEdgeCounts:
-    def test_gt_demo_has_seven_resolved_two_ambiguous(self, built_gt_demo):
+    def test_gt_demo_has_eight_resolved_two_ambiguous(self, built_gt_demo):
         with _open(built_gt_demo) as store:
             total, resolved, ambiguous = edge_counts(store)
-        assert (total, resolved, ambiguous) == (9, 7, 2)
+        assert (total, resolved, ambiguous) == (10, 8, 2)
 
     def test_ambiguous_edge_excluded_from_resolved_even_at_boundary_confidence(self):
         """An ambiguous reference (2 equally-valid candidates) is stored in
@@ -168,6 +168,17 @@ class TestCrossFileDependentCoverage:
         with _open(built_gt_demo) as store:
             total, covered = cross_file_dependent_coverage(store)
         assert (total, covered) == (7, 3)
+
+    def test_scope_prefix_limits_both_coverage_denominator_and_sources(
+        self, built_gt_demo
+    ):
+        with _open(built_gt_demo) as store:
+            total, covered = cross_file_dependent_coverage(
+                store, ["com/example/gt/GammaWorker.java"]
+            )
+        # A single-file scope cannot be covered by an edge whose source must
+        # also be inside that same scope and in a different file.
+        assert (total, covered) == (1, 0)
 
     def test_ambiguous_incoming_edge_does_not_count_as_covering(self, built_gt_demo):
         """AlphaWorker/BetaWorker in gt_demo receive only *ambiguous* incoming

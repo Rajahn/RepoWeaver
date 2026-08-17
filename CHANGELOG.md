@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.2.0 — M2 (Resolution, references and freshness)
+
+### Added
+
+- Conservative owner/name/arity/argument-type overload resolution, including stable nested-call return hints.
+- `REFERENCES` edges for signatures, local variables, generics, annotations, casts, class literals and object creation.
+- Java annotation declaration nodes and static-import owner references.
+- `unresolved_reference`: ambiguity is diagnostic evidence, never N polluted graph edges.
+- Annotation-derived HTTP/scheduled/message-listener entry-point metadata.
+- Parse-incremental/global-resolution cache and `fabric watch` with a 2-second default debounce.
+- `fabric verify --level m2`: watcher latency, edit/delete/rename equivalence, ambiguity, entry points and edge-evidence checks.
+- Explicit benchmark scopes and checked-in RepoWeaver/CodeGraph Gson core-source comparison.
+- ADR-0002 and backward-compatible schema/explore contract v1.1.
+
+### Measured validation
+
+- Pinned Gson core scope: 90.12% strict resolved cross-file coverage, 6.36% ambiguous edge rate, fixture edge precision/recall 1.0/1.0.
+- CodeGraph 1.5.0 on the same commit/scope: 92.59% coverage. RepoWeaver is aligned to the release band but remains 2.47 percentage points behind.
+- M2 watcher sync <=5 seconds and incremental canonical graph hash equals a clean full rebuild after edit/delete/rename.
+
+### Remaining limitations
+
+- No compiler/type-system overlay (SCIP/jdtls, planned M3).
+- Runtime DI/reflection/config routing and dynamic MQ dispatch remain outside static truth.
+- Java only.
+
 ## v0.1.0 — M1 (Fabric MVP)
 
 Initial working closed loop: index a Java repo, retrieve context, serve it through a single MCP tool. Zero LLM, zero external network calls at runtime.

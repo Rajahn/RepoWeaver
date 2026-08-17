@@ -65,7 +65,7 @@ CREATE TABLE IF NOT EXISTS edge (
     id                   TEXT    PRIMARY KEY,   -- sha256(f"{from_id}|{to_id}|{type}")[:16]
     from_id              TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
     to_id                TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
-    type                 TEXT    NOT NULL,      -- CALLS | EXTENDS | IMPLEMENTS | IMPORTS | ROUTES_TO | RUNTIME_CALLS
+    type                 TEXT    NOT NULL,      -- CALLS | EXTENDS | IMPLEMENTS | IMPORTS | REFERENCES | ROUTES_TO | RUNTIME_CALLS
     provenance           TEXT    NOT NULL,      -- tree_sitter_java | scip_java | jdtls | otel_trace | rule_entry_point
     confidence           REAL    NOT NULL DEFAULT 1.0
                              CHECK (confidence BETWEEN 0.0 AND 1.0),
@@ -112,10 +112,10 @@ CREATE TABLE IF NOT EXISTS file_meta (
 CREATE TABLE IF NOT EXISTS unresolved_reference (
     id            TEXT    PRIMARY KEY,   -- sha256(f"{from_id}|{type}|{target_name}")[:16]
     from_id       TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
-    type          TEXT    NOT NULL,      -- CALLS | EXTENDS | IMPLEMENTS
+    type          TEXT    NOT NULL,      -- CALLS | EXTENDS | IMPLEMENTS | REFERENCES
     target_name   TEXT    NOT NULL DEFAULT '',  -- method/type simple name that was ambiguous
     candidates    TEXT    NOT NULL DEFAULT '[]', -- JSON array of candidate node ids, length >= 2
-    reason        TEXT    NOT NULL DEFAULT '',  -- ambiguous_owner_chain | ambiguous_type | ambiguous_global_fallback | ambiguous_supertype
+    reason        TEXT    NOT NULL DEFAULT '',  -- ambiguous_owner_chain | ambiguous_type | ambiguous_global_fallback | ambiguous_supertype | ambiguous_type_use
     file          TEXT    NOT NULL DEFAULT '',  -- first-observed call/reference site
     line          INTEGER NOT NULL DEFAULT 0,
     site_count    INTEGER NOT NULL DEFAULT 1,   -- number of source sites merged into this row

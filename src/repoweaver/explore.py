@@ -56,6 +56,11 @@ def _make_slice(
         "qualified_name": node["qualified_name"],
         "confidence": confidence,
         "provenance": provenance,
+        # v1.1 additive (M2) — absent/false on any node predating entry-point
+        # detection; existing v1 consumers that don't read this key are
+        # unaffected.
+        "entry_point": bool(node.get("is_entry_point")),
+        "entry_point_kind": node.get("entry_point_kind") or "",
     }
 
 

@@ -27,6 +27,7 @@ from repoweaver.parser.java import (
     NodeRecord,
     ParsedFile,
     TypeRef,
+    TypeUseRef,
 )
 from repoweaver.resolver import (
     SymbolTable,
@@ -35,6 +36,7 @@ from repoweaver.resolver import (
     resolve_calls,
     resolve_imports,
     resolve_type_refs,
+    resolve_type_uses,
 )
 
 _SKIP_DIRS = {".git", "target", "build", "out", "node_modules", ".repoweaver"}
@@ -109,6 +111,7 @@ def _parsed_file_to_json(pf: ParsedFile) -> str:
             "top_level_types": pf.top_level_types,
             "type_refs": [asdict(t) for t in pf.type_refs],
             "calls": [asdict(c) for c in pf.calls],
+            "type_uses": [asdict(t) for t in pf.type_uses],
             "source": pf.source,
         }
     )
@@ -124,6 +127,7 @@ def _parsed_file_from_json(payload: str) -> ParsedFile:
         top_level_types=d["top_level_types"],
         type_refs=[TypeRef(**t) for t in d["type_refs"]],
         calls=[CallRef(**c) for c in d["calls"]],
+        type_uses=[TypeUseRef(**t) for t in d.get("type_uses", [])],
         source=d["source"],
     )
 
@@ -171,7 +175,9 @@ class Indexer:
             if rel in changed:
                 pf = parser.parse_file(self.repo_root / rel)
                 content_hash = file_hash(self.repo_root / rel)
-                self.store.set_file_refs_cache(rel, content_hash, _parsed_file_to_json(pf))
+                self.store.set_file_refs_cache(
+                    rel, content_hash, _parsed_file_to_json(pf)
+                )
             else:
                 cached = self.store.get_file_refs_cache(rel)
                 content_hash = file_hash(self.repo_root / rel)
@@ -238,18 +244,28 @@ class Indexer:
             src_hash = hashlib.sha256(pf.source.encode("utf-8")).hexdigest()
             call_edges, call_unresolved = resolve_calls(pf, ctx, symtab, src_hash)
             import_edges = resolve_imports(pf, symtab, src_hash)
+            reference_edges, reference_unresolved = resolve_type_uses(
+                pf, ctx, symtab, src_hash
+            )
 
             edges_by_file[pf.file] = (
-                type_edges_by_file[pf.file] + call_edges + import_edges
+                type_edges_by_file[pf.file]
+                + call_edges
+                + import_edges
+                + reference_edges
             )
             unresolved_by_file[pf.file] = (
-                type_unresolved_by_file[pf.file] + call_unresolved
+                type_unresolved_by_file[pf.file]
+                + call_unresolved
+                + reference_unresolved
             )
 
         for pf in parsed_files:
             self.store.replace_file_nodes(pf.file, node_rows_by_file[pf.file])
         for pf in parsed_files:
-            self.store.replace_file_edges(pf.file, edges_by_file[pf.file], PARSER_VERSION)
+            self.store.replace_file_edges(
+                pf.file, edges_by_file[pf.file], PARSER_VERSION
+            )
         for pf in parsed_files:
             self.store.replace_file_unresolved(pf.file, unresolved_by_file[pf.file])
         for pf in parsed_files:

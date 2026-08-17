@@ -65,6 +65,13 @@ def test_string_class_vs_reader_type_resolves_exact_match(store: GraphStore) -> 
     assert f"{PKG}.Codec#fromJson(Reader,Type)" not in targets
 
 
+def test_nested_factory_return_type_disambiguates_overload(store: GraphStore) -> None:
+    """Tokens.get(String.class) has one stable declared return type, Token.
+    That return type is resolved repo-wide before overload scoring."""
+    targets = _resolved_targets(store, CALLER_RUN)
+    assert f"{PKG}.Codec#fromJson(String,Token)" in targets
+
+
 def test_null_argument_does_not_disambiguate_reference_overloads(
     store: GraphStore,
 ) -> None:
@@ -108,20 +115,20 @@ def _evidence_lines(store: GraphStore, from_qname: str, to_qname: str) -> set[in
 def test_int_literal_prefers_exact_over_widening_constructor(
     store: GraphStore,
 ) -> None:
-    """new Box(5) (line 9) is an exact match for Box(int); Box(long) only
+    """new Box(5) (line 10) is an exact match for Box(int); Box(long) only
     scores via widening, so phase-1 exact-match wins even though the margin
     is 1 — the line-9 call must land on Box(int), not Box(long)."""
     lines = _evidence_lines(store, CALLER_RUN, f"{PKG}.Box#<init>(int)")
-    assert 9 in lines
+    assert 10 in lines
     long_lines = _evidence_lines(store, CALLER_RUN, f"{PKG}.Box#<init>(long)")
-    assert 9 not in long_lines
+    assert 10 not in long_lines
 
 
 def test_long_literal_eliminates_int_constructor(store: GraphStore) -> None:
-    """new Box(5L) (line 10) can never narrow to Box(int) — a long literal
+    """new Box(5L) (line 11) can never narrow to Box(int) — a long literal
     eliminates the int overload outright, leaving Box(long) as the sole
     survivor for that call site."""
     lines = _evidence_lines(store, CALLER_RUN, f"{PKG}.Box#<init>(long)")
-    assert 10 in lines
+    assert 11 in lines
     int_lines = _evidence_lines(store, CALLER_RUN, f"{PKG}.Box#<init>(int)")
-    assert 10 not in int_lines
+    assert 11 not in int_lines

@@ -24,12 +24,13 @@ because it is the only case with no explicit receiver at all.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 from repoweaver.graph.store import EdgeRow, NodeRow, UnresolvedReferenceRow
 from repoweaver.parser.java import CallRef, ParsedFile
 
-_TYPE_KINDS = {"class", "interface", "enum"}
+_TYPE_KINDS = {"class", "interface", "enum", "annotation"}
 
 _STRUCTURAL_CONFIDENCE = 1.00  # EXTENDS/IMPLEMENTS, unique target
 _DECLARED_CONFIDENCE = 0.95  # CALLS, owner precisely known, unique target
@@ -37,7 +38,7 @@ _UNIQUE_UNTYPED_CONFIDENCE = 0.70  # CALLS, blind global name+arity fallback
 
 
 def _split_member_signature(qname: str) -> tuple[str | None, str, list[str]]:
-    """"pkg.Owner#name(A,B)" -> ("pkg.Owner", "name", ["A", "B"]). Param type
+    """ "pkg.Owner#name(A,B)" -> ("pkg.Owner", "name", ["A", "B"]). Param type
     names are simple names with generics already stripped by the parser (see
     `_simple_type_name` in parser/java.py) before being joined with commas, so
     a plain comma-split is reliable — no "Map<String,Integer>"-style embedded
@@ -53,8 +54,18 @@ def _split_member_signature(qname: str) -> tuple[str | None, str, list[str]]:
     return owner, name, param_types
 
 
+def _return_type_from_signature(signature: str, method_name: str) -> str:
+    """Extract a simple declared return type from the parser's stable
+    ``ReturnType method(Args)`` signature. Generic arguments and array suffixes
+    are erased because overload scoring operates on simple Java types."""
+    marker = f" {method_name}("
+    raw = signature.split(marker, 1)[0].strip() if marker in signature else ""
+    raw = re.sub(r"<.*>", "", raw).rstrip("[] ")
+    return raw.rsplit(".", 1)[-1] if raw else "unknown"
+
+
 def _split_member_qname(qname: str) -> tuple[str | None, str, int]:
-    """"pkg.Owner#name(A,B)" -> ("pkg.Owner", "name", 2) — arity-only view of
+    """ "pkg.Owner#name(A,B)" -> ("pkg.Owner", "name", 2) — arity-only view of
     `_split_member_signature`, for call sites that don't need the param types."""
     owner, name, param_types = _split_member_signature(qname)
     return owner, name, len(param_types)
@@ -94,6 +105,7 @@ class SymbolTable:
         self.ctors_by_key: dict[tuple[str, int], list[str]] = {}
         self.supertypes: dict[str, list[str]] = {}
         self.param_types_by_id: dict[str, list[str]] = {}
+        self.return_type_by_id: dict[str, str] = {}
 
         for n in all_nodes:
             self.kind_by_id[n.id] = n.kind
@@ -108,6 +120,9 @@ class SymbolTable:
                 if owner is not None:
                     arity = len(param_types)
                     self.param_types_by_id[n.id] = param_types
+                    self.return_type_by_id[n.id] = _return_type_from_signature(
+                        n.signature, name
+                    )
                     self.methods_by_key.setdefault((owner, name, arity), []).append(
                         n.id
                     )
@@ -252,6 +267,63 @@ def resolve_type_refs(
     return edges, unresolved
 
 
+def resolve_type_uses(
+    pf: ParsedFile, ctx: FileContext, symtab: SymbolTable, src_hash: str
+) -> tuple[list[EdgeRow], list[UnresolvedReferenceRow]]:
+    """Resolve field/return/param/local-var/generic/annotation/throws/cast/
+    instanceof/class-literal/object-creation type uses into REFERENCES edges.
+    Only a unique resolution (via explicit import, nested/ancestor type, same
+    package, or wildcard import — never a blind global-name fallback) is
+    written as an edge; multiple candidates go to unresolved_reference only,
+    never the edge table."""
+    edges: list[EdgeRow] = []
+    unresolved: list[UnresolvedReferenceRow] = []
+    for ref in pf.type_uses:
+        from_ids = symtab.ids_by_qname.get(ref.caller_qualified_name, [])
+        if not from_ids:
+            continue
+        from_id = from_ids[0]
+
+        candidates = _resolve_type_name(
+            ref.type_simple_name,
+            ref.owner_qname,
+            ctx,
+            symtab,
+            allow_global_fallback=False,
+        )
+        if not candidates:
+            continue  # external/JDK type — expected, not an error
+        if len(candidates) == 1:
+            to_id = candidates[0]
+            if to_id == from_id:
+                continue  # a type referencing itself is not a useful edge
+            edges.append(
+                EdgeRow(
+                    from_id=from_id,
+                    to_id=to_id,
+                    type="REFERENCES",
+                    provenance="tree_sitter_java",
+                    confidence=_DECLARED_CONFIDENCE,
+                    file=pf.file,
+                    line=ref.line,
+                    source_hash=src_hash,
+                )
+            )
+        else:
+            unresolved.append(
+                UnresolvedReferenceRow(
+                    from_id=from_id,
+                    type="REFERENCES",
+                    target_name=ref.type_simple_name,
+                    candidates=candidates,
+                    reason="ambiguous_type_use",
+                    file=pf.file,
+                    line=ref.line,
+                )
+            )
+    return edges, unresolved
+
+
 def _ids_to_qnames(symtab: SymbolTable, ids: list[str]) -> list[str]:
     """`_resolve_type_name` returns type *node ids* (correct for EXTENDS/IMPLEMENTS
     edge targets); `methods_by_key`/`ctors_by_key`/`declared_lookup` are keyed by
@@ -362,6 +434,49 @@ def _param_compat(hint: str, param_type: str, symtab: SymbolTable) -> int | None
     return _SCORE_NEUTRAL
 
 
+def _resolve_nested_call_hint(
+    hint: str,
+    owner_qname: str,
+    ctx: FileContext,
+    symtab: SymbolTable,
+) -> str:
+    if not hint.startswith("@call:"):
+        return hint
+    try:
+        receiver, method, raw_arity = hint[len("@call:") :].rsplit(":", 2)
+        arity = int(raw_arity)
+    except (ValueError, TypeError):
+        return "unknown"
+
+    if receiver == "this":
+        owner_qnames = [owner_qname]
+    else:
+        type_ids = _resolve_type_name(
+            receiver,
+            owner_qname,
+            ctx,
+            symtab,
+            allow_global_fallback=False,
+        )
+        owner_qnames = _ids_to_qnames(symtab, type_ids)
+    if not owner_qnames:
+        return "unknown"
+
+    candidates = symtab.declared_lookup(owner_qnames, method, arity)
+    return_types = {
+        symtab.return_type_by_id.get(candidate, "unknown") for candidate in candidates
+    }
+    return_types.discard("unknown")
+    return_types.discard("void")
+    return next(iter(return_types)) if len(return_types) == 1 else "unknown"
+
+
+def _normalize_argument_hints(
+    hints: list[str], owner_qname: str, ctx: FileContext, symtab: SymbolTable
+) -> list[str]:
+    return [_resolve_nested_call_hint(hint, owner_qname, ctx, symtab) for hint in hints]
+
+
 def _score_overloads(
     candidate_ids: list[str], arg_hints: list[str], symtab: SymbolTable
 ) -> list[tuple[str, int]]:
@@ -431,12 +546,18 @@ def _owner_candidates_for_call(
     candidates (as opposed to `[]`) means "type itself unresolved" — the
     caller must skip, never fall back to a blind global guess."""
     owner_candidates = _resolve_type_name(
-        call.receiver_hint or "", call.owner_qname, ctx, symtab, allow_global_fallback=False
+        call.receiver_hint or "",
+        call.owner_qname,
+        ctx,
+        symtab,
+        allow_global_fallback=False,
     )
     if not owner_candidates:
         return None, False
     owner_qnames = _ids_to_qnames(symtab, owner_candidates)
-    found = symtab.declared_lookup(owner_qnames, call.method_simple_name, call.argument_count)
+    found = symtab.declared_lookup(
+        owner_qnames, call.method_simple_name, call.argument_count
+    )
     return found, len(owner_qnames) > 1
 
 
@@ -472,7 +593,9 @@ def resolve_calls(
             for owner in owner_qnames:
                 pool.extend(symtab.ctors_by_key.get((owner, arity), []))
             candidates = sorted(set(pool))
-            reason = "ambiguous_type" if len(owner_qnames) > 1 else "ambiguous_owner_chain"
+            reason = (
+                "ambiguous_type" if len(owner_qnames) > 1 else "ambiguous_owner_chain"
+            )
 
         elif call.receiver_kind == "this":
             candidates = symtab.declared_lookup([call.owner_qname], name, arity)
@@ -539,9 +662,10 @@ def resolve_calls(
             continue
 
         if len(candidates) > 1:
-            candidates = _narrow_by_overload_score(
-                candidates, call.argument_type_hints, symtab
+            argument_hints = _normalize_argument_hints(
+                call.argument_type_hints, call.owner_qname, ctx, symtab
             )
+            candidates = _narrow_by_overload_score(candidates, argument_hints, symtab)
 
         if not candidates:
             continue  # external/JDK/unindexed target — expected, not an error
@@ -581,9 +705,18 @@ def resolve_imports(
     above but never materialize as an IMPORTS edge (they don't name one type)."""
     out: list[EdgeRow] = []
     for imp in pf.imports:
-        if imp.is_wildcard or imp.is_static:
+        imported_type = imp.imported_name
+        if imp.is_static:
+            # `import static pkg.Type.MEMBER` references the owning type even
+            # though the imported symbol is a field/method. For wildcard
+            # imports the parser already records `pkg.Type` as imported_name;
+            # for explicit members strip the final segment.
+            if not imp.is_wildcard and "." in imported_type:
+                imported_type = imported_type.rsplit(".", 1)[0]
+        elif imp.is_wildcard:
             continue
-        to_candidates = symtab.ids_by_qname.get(imp.imported_name, [])
+
+        to_candidates = symtab.ids_by_qname.get(imported_type, [])
         if not to_candidates:
             continue
         for top_level_qname in pf.top_level_types:
@@ -632,4 +765,5 @@ __all__ = [
     "resolve_calls",
     "resolve_imports",
     "resolve_type_refs",
+    "resolve_type_uses",
 ]

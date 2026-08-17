@@ -1104,7 +1104,7 @@ wheels = [
 
 [[package]]
 name = "repoweaver"
-version = "0.1.0"
+version = "0.2.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
@@ -1113,6 +1113,7 @@ dependencies = [
     { name = "tree-sitter" },
     { name = "tree-sitter-java" },
     { name = "typer" },
+    { name = "watchfiles" },
 ]
 
 [package.optional-dependencies]
@@ -1131,6 +1132,7 @@ requires-dist = [
     { name = "tree-sitter", specifier = ">=0.23" },
     { name = "tree-sitter-java", specifier = ">=0.23" },
     { name = "typer", specifier = ">=0.16" },
+    { name = "watchfiles", specifier = ">=1.0" },
 ]
 provides-extras = ["dev"]
 

@@ -90,6 +90,10 @@ edges:
     to: com.example.gt.BetaWorker#close()                  # receiver/type narrows the call
     type: CALLS
     resolvable: false
+  - from: com.example.gt.Entry#run()
+    to: com.example.gt.GammaWorker
+    type: REFERENCES  # local-variable-type use of `GammaWorker w = new GammaWorker();`
+    resolvable: true
 
 # Fixed retrieval queries used for top-k recall / MRR. `expected_any_of` is
 # an OR-set: a hit on any qualified_name in the list counts as relevant

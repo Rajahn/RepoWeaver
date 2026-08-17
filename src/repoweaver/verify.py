@@ -57,10 +57,14 @@ def _built_fixture_repo():
 def run_verification(level: str, repo: Path) -> VerifyResult:
     if level == "benchmark":
         return _run_benchmark_verification()
+    if level == "m2":
+        return _run_m2_verification()
     if level != "m1":
         return VerifyResult(
             False,
-            [f"Level '{level}' is not implemented. Supported: 'm1', 'benchmark'."],
+            [
+                f"Level '{level}' is not implemented. Supported: 'm1', 'm2', 'benchmark'."
+            ],
         )
 
     report: list[str] = [f"RepoWeaver verify --level m1  (fixture: {_FIXTURE})"]
@@ -259,13 +263,13 @@ def _run_benchmark_verification() -> VerifyResult:
     c.check("run status is MEASURED", result.get("status") == "MEASURED", str(result))
     c.check("nodes == 16", result.get("nodes") == 16, str(result.get("nodes")))
     c.check(
-        "edges_total == 9",
-        result.get("edges_total") == 9,
+        "edges_total == 10",
+        result.get("edges_total") == 10,
         str(result.get("edges_total")),
     )
     c.check(
-        "edges_resolved == 7 (confidence>=0.5, non-ambiguous)",
-        result.get("edges_resolved") == 7,
+        "edges_resolved == 8 (confidence>=0.5, non-ambiguous)",
+        result.get("edges_resolved") == 8,
         str(result.get("edges_resolved")),
     )
     c.check(
@@ -274,8 +278,8 @@ def _run_benchmark_verification() -> VerifyResult:
         str(result.get("edges_ambiguous")),
     )
     c.check(
-        "ambiguous_edge_rate == 2/9",
-        result.get("ambiguous_edge_rate") == _approx(2 / 9),
+        "ambiguous_edge_rate == 2/10",
+        result.get("ambiguous_edge_rate") == _approx(2 / 10),
         str(result.get("ambiguous_edge_rate")),
     )
     c.check(
@@ -331,6 +335,179 @@ def _run_benchmark_verification() -> VerifyResult:
     c.check(
         "overall comparison status is FAIL (by design)", comparison.status == "FAIL"
     )
+
+    passed = c.failures == 0
+    report.append("")
+    report.append("PASS" if passed else f"FAIL ({c.failures} check(s) failed)")
+    return VerifyResult(passed, report)
+
+
+def _run_m2_verification() -> VerifyResult:
+    """`fabric verify --level m2` — machine-verifies the watcher/incremental
+    guarantees this milestone adds: watch latency, incremental==full
+    equivalence after edit/delete/rename, ambiguous-candidate bookkeeping,
+    entry-point detection, and per-edge provenance/confidence — all against
+    a disposable temp repo, never the bundled fixtures in place."""
+    import json
+    import threading
+    import time
+
+    from repoweaver.benchmark.metrics import graph_signature
+    from repoweaver.watcher import watch_and_sync
+
+    report: list[str] = ["RepoWeaver verify --level m2"]
+    c = _Check(report)
+
+    with tempfile.TemporaryDirectory(prefix="repoweaver-verify-m2-") as tmp:
+        repo_root = Path(tmp) / "m2repo"
+        pkg = repo_root / "com" / "example"
+        pkg.mkdir(parents=True)
+        (pkg / "A.java").write_text(
+            "package com.example;\npublic class A { public void foo() {} }\n"
+        )
+        db_path = repo_root / ".repoweaver" / "graph.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build()
+
+        report.append("-- watcher latency & freshness --")
+        stop = threading.Event()
+        events: list = []
+
+        def _run_watcher() -> None:
+            with GraphStore(db_path) as watch_store:
+                watch_and_sync(
+                    repo_root,
+                    watch_store,
+                    debounce_ms=200,
+                    stop_event=stop,
+                    on_sync=lambda ch, de, st: events.append((ch, de, st)),
+                )
+
+        t = threading.Thread(target=_run_watcher)
+        t.start()
+        time.sleep(0.3)
+        started = time.monotonic()
+        (pkg / "A.java").write_text(
+            "package com.example;\n"
+            "public class A { public void foo() {} public void bar() {} }\n"
+        )
+        deadline = started + 5.0
+        while time.monotonic() < deadline and not events:
+            time.sleep(0.05)
+        elapsed = time.monotonic() - started
+        stop.set()
+        t.join(timeout=5)
+        c.check(
+            "watch latency <= 5s from edit to sync callback",
+            bool(events) and elapsed <= 5.0,
+            f"elapsed={elapsed:.2f}s events={len(events)}",
+        )
+
+        report.append("-- incremental == full rebuild after edit/delete/rename --")
+        for i in range(3):
+            (pkg / f"Extra{i}.java").write_text(
+                f"package com.example;\n"
+                f"public class Extra{i} {{ public void run() {{ new A().foo(); }} }}\n"
+            )
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build()
+
+        (pkg / "A.java").write_text(
+            "package com.example;\n"
+            "public class A { public void foo() {} public void baz() {} }\n"
+        )
+        renamed: set[str] = set()
+        deleted_renamed: set[str] = set()
+        for i in range(3):
+            old = pkg / f"Extra{i}.java"
+            new_rel = f"com/example/Renamed{i}.java"
+            content = old.read_text().replace(f"Extra{i}", f"Renamed{i}")
+            old.unlink()
+            (repo_root / new_rel).write_text(content)
+            deleted_renamed.add(f"com/example/Extra{i}.java")
+            renamed.add(new_rel)
+        (pkg / "ToDelete.java").write_text(
+            "package com.example;\npublic class ToDelete {}\n"
+        )
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build()
+        (pkg / "ToDelete.java").unlink()
+
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build_incremental(
+                changed={"com/example/A.java"} | renamed,
+                deleted=deleted_renamed | {"com/example/ToDelete.java"},
+            )
+            incremental_sig = graph_signature(store)
+            edges = store.conn.execute(
+                "SELECT type, provenance, confidence FROM edge"
+            ).fetchall()
+
+        full_db_path = repo_root / ".repoweaver" / "graph_full_check.db"
+        with GraphStore(full_db_path) as store2:
+            Indexer(repo_root, store2).build()
+            full_sig = graph_signature(store2)
+
+        c.check(
+            "incremental rebuild hash == full rebuild hash",
+            incremental_sig == full_sig,
+            f"{incremental_sig} != {full_sig}",
+        )
+        c.check(
+            "every resolved edge has provenance + confidence in [0,1]",
+            all(e["provenance"] and 0.0 <= e["confidence"] <= 1.0 for e in edges)
+            and len(edges) > 0,
+            str([dict(e) for e in edges]),
+        )
+
+        report.append("-- ambiguous candidate bookkeeping --")
+        (repo_root / "com/example/Left.java").write_text(
+            "package com.example;\npublic class Left { static void shared() {} }\n"
+        )
+        (repo_root / "com/example/Caller2.java").write_text(
+            "package com.example;\npublic class Caller2 { void run() { shared(); } }\n"
+        )
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build_incremental(
+                changed={"com/example/Left.java", "com/example/Caller2.java"},
+                deleted=set(),
+            )
+        (repo_root / "com/example/Right.java").write_text(
+            "package com.example;\npublic class Right { static void shared() {} }\n"
+        )
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build_incremental(
+                changed={"com/example/Right.java"}, deleted=set()
+            )
+            rows = store.conn.execute(
+                "SELECT candidates FROM unresolved_reference "
+                "WHERE target_name = 'shared'"
+            ).fetchall()
+        c.check(
+            "ambiguous call site tracked with >=2 candidates, no polluted edge",
+            len(rows) == 1 and len(json.loads(rows[0]["candidates"])) == 2,
+            str(rows),
+        )
+
+        report.append("-- entry-point detection --")
+        (repo_root / "com/example/Ctrl.java").write_text(
+            "package com.example;\n"
+            "public class Ctrl {\n"
+            "    @GetMapping\n"
+            "    public void handle() {}\n"
+            "}\n"
+        )
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build_incremental(
+                changed={"com/example/Ctrl.java"}, deleted=set()
+            )
+            node = store.find_by_qualified_name("com.example.Ctrl#handle()")[0]
+        c.check(
+            "annotated method flagged as HTTP_ROUTE entry point",
+            bool(node["is_entry_point"]) and node["entry_point_kind"] == "HTTP_ROUTE",
+            str(node),
+        )
 
     passed = c.failures == 0
     report.append("")

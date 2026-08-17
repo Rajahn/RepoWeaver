@@ -21,7 +21,12 @@ PARSER_VERSION = f"tree-sitter-java {getattr(tree_sitter_java, '__version__', '0
 
 _LANGUAGE = Language(tree_sitter_java.language())
 
-_TYPE_DECL_TYPES = {"class_declaration", "interface_declaration", "enum_declaration"}
+_TYPE_DECL_TYPES = {
+    "class_declaration",
+    "interface_declaration",
+    "enum_declaration",
+    "annotation_type_declaration",
+}
 _MEMBER_DECL_TYPES = {
     "method_declaration",
     "constructor_declaration",
@@ -32,6 +37,7 @@ _KIND_BY_KEYWORD = {
     "class_declaration": "class",
     "interface_declaration": "interface",
     "enum_declaration": "enum",
+    "annotation_type_declaration": "annotation",
 }
 
 
@@ -49,7 +55,9 @@ class NodeRecord:
     simple_name: str = ""
     signature: str = ""
     commit_hash: str = ""
-    annotations: list[str] = field(default_factory=list)  # simple names, e.g. "GetMapping"
+    annotations: list[str] = field(
+        default_factory=list
+    )  # simple names, e.g. "GetMapping"
 
 
 @dataclass
@@ -92,6 +100,22 @@ class CallRef:
 
 
 @dataclass
+class TypeUseRef:
+    """A raw, unresolved "uses this type" reference — field type, method
+    return type, parameter type, local variable type, generic type argument,
+    annotation type, throws clause, cast, instanceof, class literal, or
+    object-creation type. Resolved into a REFERENCES edge (or left ambiguous)
+    by resolver.py — distinct from CALLS (invocation) and EXTENDS/IMPLEMENTS
+    (inheritance), which already cover those two type-use shapes."""
+
+    caller_qualified_name: str  # enclosing method/constructor/field qname, or owner class if no member context
+    owner_qname: str  # qualified name of the type enclosing this use site
+    type_simple_name: str
+    context: str  # field_type | return_type | param_type | local_var_type | generic_arg | annotation_type | throws | cast | instanceof | class_literal | object_creation
+    line: int
+
+
+@dataclass
 class ParsedFile:
     file: str
     package: str = ""
@@ -100,6 +124,7 @@ class ParsedFile:
     top_level_types: list[str] = field(default_factory=list)  # qualified names
     type_refs: list[TypeRef] = field(default_factory=list)
     calls: list[CallRef] = field(default_factory=list)
+    type_uses: list[TypeUseRef] = field(default_factory=list)
     source: str = ""
 
 
@@ -191,6 +216,7 @@ class JavaParser:
                 annotations=_extract_annotations(node, source),
             )
         )
+        _emit_annotation_type_uses(pf, qualified_name, qualified_name, node, source)
         if enclosing is None:
             pf.top_level_types.append(qualified_name)
 
@@ -243,7 +269,9 @@ class JavaParser:
             elif member.type == "enum_body_declarations":
                 for m in member.children:
                     if m.type == "method_declaration":
-                        self._emit_method(m, source, pf, qualified_name, local_var_types)
+                        self._emit_method(
+                            m, source, pf, qualified_name, local_var_types
+                        )
                     elif m.type == "constructor_declaration":
                         self._emit_constructor(
                             m, source, pf, qualified_name, simple_name, local_var_types
@@ -294,6 +322,13 @@ class JavaParser:
                 annotations=_extract_annotations(node, source),
             )
         )
+        _emit_annotation_type_uses(pf, qualified_name, owner_qname, node, source)
+        _emit_type_uses(
+            pf, qualified_name, owner_qname, return_node, source, "return_type"
+        )
+        if params_node is not None:
+            _emit_param_type_uses(pf, qualified_name, owner_qname, params_node, source)
+        _emit_throws_type_uses(pf, qualified_name, owner_qname, node, source)
 
         method_scope = dict(scope_types)
         if params_node is not None:
@@ -301,7 +336,9 @@ class JavaParser:
         body = node.child_by_field_name("body")
         if body is not None:
             method_scope.update(_collect_field_types(body, source))
-            self._collect_calls(body, source, pf, qualified_name, owner_qname, method_scope)
+            self._collect_calls(
+                body, source, pf, qualified_name, owner_qname, method_scope
+            )
 
     def _emit_constructor(
         self,
@@ -327,6 +364,10 @@ class JavaParser:
                 signature=f"{owner_simple_name}({', '.join(param_types)})",
             )
         )
+        _emit_annotation_type_uses(pf, qualified_name, owner_qname, node, source)
+        if params_node is not None:
+            _emit_param_type_uses(pf, qualified_name, owner_qname, params_node, source)
+        _emit_throws_type_uses(pf, qualified_name, owner_qname, node, source)
 
         method_scope = dict(scope_types)
         if params_node is not None:
@@ -334,7 +375,9 @@ class JavaParser:
         body = node.child_by_field_name("body")
         if body is not None:
             method_scope.update(_collect_field_types(body, source))
-            self._collect_calls(body, source, pf, qualified_name, owner_qname, method_scope)
+            self._collect_calls(
+                body, source, pf, qualified_name, owner_qname, method_scope
+            )
 
     def _emit_fields(
         self, node: Node, source: bytes, pf: ParsedFile, owner_qname: str
@@ -348,17 +391,22 @@ class JavaParser:
             if name_node is None:
                 continue
             simple_name = _text(name_node, source)
+            field_qname = f"{owner_qname}#{simple_name}"
             pf.nodes.append(
                 NodeRecord(
                     kind="field",
                     file=pf.file,
                     span_start=node.start_point[0] + 1,
                     span_end=node.end_point[0] + 1,
-                    qualified_name=f"{owner_qname}#{simple_name}",
+                    qualified_name=field_qname,
                     simple_name=simple_name,
                     signature=f"{type_text} {simple_name}".strip(),
                 )
             )
+            _emit_type_uses(
+                pf, field_qname, owner_qname, type_node, source, "field_type"
+            )
+            _emit_annotation_type_uses(pf, field_qname, owner_qname, node, source)
 
     def _collect_calls(
         self,
@@ -417,7 +465,51 @@ class JavaParser:
                             ),
                         )
                     )
-            self._collect_calls(child, source, pf, caller_qname, owner_qname, scope_types)
+                    _emit_type_uses(
+                        pf,
+                        caller_qname,
+                        owner_qname,
+                        type_node,
+                        source,
+                        "object_creation",
+                    )
+            elif child.type == "local_variable_declaration":
+                _emit_type_uses(
+                    pf,
+                    caller_qname,
+                    owner_qname,
+                    child.child_by_field_name("type"),
+                    source,
+                    "local_var_type",
+                )
+            elif child.type == "cast_expression":
+                _emit_type_uses(
+                    pf,
+                    caller_qname,
+                    owner_qname,
+                    child.child_by_field_name("type"),
+                    source,
+                    "cast",
+                )
+            elif child.type == "instanceof_expression":
+                named = [c for c in child.children if c.is_named]
+                if len(named) >= 2:
+                    _emit_type_uses(
+                        pf, caller_qname, owner_qname, named[1], source, "instanceof"
+                    )
+            elif child.type == "class_literal":
+                if child.children:
+                    _emit_type_uses(
+                        pf,
+                        caller_qname,
+                        owner_qname,
+                        child.children[0],
+                        source,
+                        "class_literal",
+                    )
+            self._collect_calls(
+                child, source, pf, caller_qname, owner_qname, scope_types
+            )
 
     def walk_repo(self) -> Iterator[ParsedFile]:
         """Walk all ``*.java`` files under ``repo_root`` (skipping build output dirs)."""
@@ -485,6 +577,25 @@ def _param_types(params_node: Node, source: bytes) -> list[str]:
     return types
 
 
+def _emit_param_type_uses(
+    pf: ParsedFile,
+    caller_qname: str,
+    owner_qname: str,
+    params_node: Node,
+    source: bytes,
+) -> None:
+    for p in params_node.children:
+        if p.type in ("formal_parameter", "spread_parameter"):
+            _emit_type_uses(
+                pf,
+                caller_qname,
+                owner_qname,
+                p.child_by_field_name("type"),
+                source,
+                "param_type",
+            )
+
+
 def _formal_param_types(params_node: Node, source: bytes) -> dict[str, str]:
     out: dict[str, str] = {}
     for p in params_node.children:
@@ -515,22 +626,131 @@ def _collect_field_types(node: Node, source: bytes) -> dict[str, str]:
     return out
 
 
-def _extract_annotations(decl_node: Node, source: bytes) -> list[str]:
-    """Simple names of annotations on a type/method declaration, e.g.
-    `@org.foo.GetMapping("/x")` -> "GetMapping". Used only for entry-point
-    detection; never for call resolution."""
-    names: list[str] = []
+def _iter_annotation_nodes(decl_node: Node) -> Iterator[Node]:
     modifiers = _first_of_type(decl_node, {"modifiers"})
     if modifiers is None:
-        return names
+        return
     for child in modifiers.children:
-        if child.type not in ("marker_annotation", "annotation"):
-            continue
-        name_node = child.child_by_field_name("name")
+        if child.type in ("marker_annotation", "annotation"):
+            yield child
+
+
+def _extract_annotations(decl_node: Node, source: bytes) -> list[str]:
+    """Simple names of annotations on a type/method declaration, e.g.
+    `@org.foo.GetMapping("/x")` -> "GetMapping". Used for entry-point
+    detection; see `_emit_annotation_type_uses` for the REFERENCES-edge side."""
+    names: list[str] = []
+    for ann in _iter_annotation_nodes(decl_node):
+        name_node = ann.child_by_field_name("name")
+        if name_node is not None:
+            names.append(_simple_type_name(_text(name_node, source)))
+    return names
+
+
+def _emit_annotation_type_uses(
+    pf: ParsedFile, caller_qname: str, owner_qname: str, decl_node: Node, source: bytes
+) -> None:
+    for ann in _iter_annotation_nodes(decl_node):
+        name_node = ann.child_by_field_name("name")
         if name_node is None:
             continue
-        names.append(_simple_type_name(_text(name_node, source)))
-    return names
+        pf.type_uses.append(
+            TypeUseRef(
+                caller_qualified_name=caller_qname,
+                owner_qname=owner_qname,
+                type_simple_name=_simple_type_name(_text(name_node, source)),
+                context="annotation_type",
+                line=ann.start_point[0] + 1,
+            )
+        )
+
+
+_PRIMITIVE_TYPE_NODE_TYPES = {
+    "integral_type",
+    "floating_point_type",
+    "boolean_type",
+    "void_type",
+}
+_BOUND_TYPE_NODE_TYPES = (
+    "type_identifier",
+    "scoped_type_identifier",
+    "generic_type",
+    "array_type",
+)
+
+
+def _type_use_entries(
+    type_node: Node | None, source: bytes, *, top_level: bool = True
+) -> Iterator[tuple[str, bool]]:
+    """Yields (simple_name, is_generic_arg) for every concrete type named by
+    one type node: the primary type plus every generic type argument,
+    recursively (`Map<String, List<Foo>>` -> Map, String(arg), List(arg),
+    Foo(arg)). Wildcards contribute only their bound (`? extends Foo` ->
+    Foo); unbounded wildcards and primitives/void contribute nothing — there
+    is no concrete, indexable type to reference."""
+    if type_node is None:
+        return
+    t = type_node.type
+    if t == "generic_type":
+        primary = type_node.children[0] if type_node.children else None
+        args_node = next(
+            (c for c in type_node.children[1:] if c.type == "type_arguments"), None
+        )
+        yield from _type_use_entries(primary, source, top_level=top_level)
+        if args_node is not None:
+            for arg in args_node.children:
+                if arg.is_named:
+                    yield from _type_use_entries(arg, source, top_level=False)
+        return
+    if t == "wildcard":
+        bound = next(
+            (c for c in type_node.children if c.type in _BOUND_TYPE_NODE_TYPES), None
+        )
+        if bound is not None:
+            yield from _type_use_entries(bound, source, top_level=top_level)
+        return
+    if t == "array_type":
+        yield from _type_use_entries(
+            type_node.child_by_field_name("element"), source, top_level=top_level
+        )
+        return
+    if t in _PRIMITIVE_TYPE_NODE_TYPES:
+        return
+    yield (_simple_type_name(_text(type_node, source)), not top_level)
+
+
+def _emit_type_uses(
+    pf: ParsedFile,
+    caller_qname: str,
+    owner_qname: str,
+    type_node: Node | None,
+    source: bytes,
+    context: str,
+) -> None:
+    if type_node is None:
+        return
+    line = type_node.start_point[0] + 1
+    for simple_name, is_generic_arg in _type_use_entries(type_node, source):
+        pf.type_uses.append(
+            TypeUseRef(
+                caller_qualified_name=caller_qname,
+                owner_qname=owner_qname,
+                type_simple_name=simple_name,
+                context="generic_arg" if is_generic_arg else context,
+                line=line,
+            )
+        )
+
+
+def _emit_throws_type_uses(
+    pf: ParsedFile, caller_qname: str, owner_qname: str, decl_node: Node, source: bytes
+) -> None:
+    throws_node = _first_of_type(decl_node, {"throws"})
+    if throws_node is None:
+        return
+    for c in throws_node.children:
+        if c.is_named:
+            _emit_type_uses(pf, caller_qname, owner_qname, c, source, "throws")
 
 
 def _count_arguments(args_node: Node | None) -> int:
@@ -545,7 +765,10 @@ _INTEGER_LITERAL_TYPES = {
     "octal_integer_literal",
     "binary_integer_literal",
 }
-_FLOATING_LITERAL_TYPES = {"decimal_floating_point_literal", "hex_floating_point_literal"}
+_FLOATING_LITERAL_TYPES = {
+    "decimal_floating_point_literal",
+    "hex_floating_point_literal",
+}
 
 
 def _literal_argument_type(node: Node, source: bytes) -> str | None:
@@ -578,9 +801,17 @@ def _infer_argument_type(
         return scope_types.get(_text(node, source), "unknown")
     if node.type == "this":
         return owner_simple_name
-    if node.type in ("cast_expression", "object_creation_expression", "array_creation_expression"):
+    if node.type in (
+        "cast_expression",
+        "object_creation_expression",
+        "array_creation_expression",
+    ):
         type_node = node.child_by_field_name("type")
-        return _simple_type_name(_text(type_node, source)) if type_node is not None else "unknown"
+        return (
+            _simple_type_name(_text(type_node, source))
+            if type_node is not None
+            else "unknown"
+        )
     if node.type == "class_literal":
         # `Foo.class`'s static type is always exactly java.lang.Class — never
         # its (JDK, unindexed) generic argument, and never java.lang.reflect.Type.
@@ -592,10 +823,22 @@ def _infer_argument_type(
             return scope_types.get(_text(fa_field, source), "unknown")
         return "unknown"
     if node.type == "method_invocation":
-        # Return-type resolution needs the repo-wide symbol table, which is
-        # not available during single-file parsing — always "unknown" here
-        # rather than guess, matching the resolver's own no-guessing rule.
-        return "unknown"
+        # Preserve enough structure for the repo-wide resolver to infer a
+        # return type safely. It will only use the hint when every matching
+        # callee has the same declared return type.
+        name_node = node.child_by_field_name("name")
+        args_node = node.child_by_field_name("arguments")
+        object_node = node.child_by_field_name("object")
+        if name_node is None:
+            return "unknown"
+        receiver = "this"
+        if object_node is not None:
+            if object_node.type != "identifier":
+                return "unknown"
+            raw_receiver = _text(object_node, source)
+            receiver = scope_types.get(raw_receiver, raw_receiver)
+        method = _text(name_node, source)
+        return f"@call:{receiver}:{method}:{_count_arguments(args_node)}"
     return "unknown"
 
 

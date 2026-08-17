@@ -86,6 +86,9 @@ def render_report(candidate: dict, targets_path: str | None = None) -> str:
     lines.append(f"- Repo: `{candidate.get('repo', '?')}`")
     lines.append(f"- Adapter: `{candidate.get('adapter', '?')}`")
     lines.append(f"- Status: `{candidate.get('status', 'UNKNOWN')}`")
+    scope = candidate.get("scope_prefixes")
+    if scope:
+        lines.append(f"- Scope prefixes: `{', '.join(scope)}`")
     lines.append("")
     lines.append("## Metrics")
     lines.append("")

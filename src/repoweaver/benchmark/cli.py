@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Annotated
 
 import typer
 
@@ -35,6 +36,13 @@ def run(
         "--ground-truth",
         help="Path to a ground_truth.yaml to score correctness against.",
     ),
+    scope_prefix: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--scope-prefix",
+            help="Repo-relative source prefix; repeat to define an apples-to-apples scope.",
+        ),
+    ] = None,
 ) -> None:
     """Run a benchmark and write metrics JSON to --output."""
     result = run_benchmark(
@@ -42,6 +50,7 @@ def run(
         name=name,
         adapter=adapter,
         ground_truth=Path(ground_truth) if ground_truth else None,
+        scope_prefixes=scope_prefix,
     )
     out_path = Path(output)
     out_path.parent.mkdir(parents=True, exist_ok=True)

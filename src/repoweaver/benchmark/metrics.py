@@ -43,6 +43,7 @@ class BenchmarkMetrics:
     repo: str
     adapter: str
     commit: str | None = None
+    scope_prefixes: list[str] | None = None
 
     java_files: int | None = None
     symbol_files: int | None = None
@@ -77,8 +78,12 @@ class BenchmarkMetrics:
         return asdict(self)
 
 
-def count_java_files(repo_root: Path) -> int:
-    return sum(1 for _ in _iter_java_files(repo_root))
+def count_java_files(repo_root: Path, scope_prefixes: list[str] | None = None) -> int:
+    return sum(
+        1
+        for path in _iter_java_files(repo_root)
+        if _in_scope(path.relative_to(repo_root).as_posix(), scope_prefixes)
+    )
 
 
 def _iter_java_files(repo_root: Path) -> Iterable[Path]:
@@ -89,12 +94,14 @@ def _iter_java_files(repo_root: Path) -> Iterable[Path]:
         yield path
 
 
-def count_parse_errors(repo_root: Path) -> int:
+def count_parse_errors(repo_root: Path, scope_prefixes: list[str] | None = None) -> int:
     """Independent syntax-error check (tree.root_node.has_error) — does not
     reuse or alter repoweaver.parser.java, which never records this today."""
     parser = Parser(_LANGUAGE)
     errors = 0
     for path in _iter_java_files(repo_root):
+        if not _in_scope(path.relative_to(repo_root).as_posix(), scope_prefixes):
+            continue
         tree = parser.parse(path.read_bytes())
         if tree.root_node.has_error:
             errors += 1
@@ -140,7 +147,15 @@ def graph_signature(store: GraphStore) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def edge_counts(store: GraphStore) -> tuple[int, int, int]:
+def _in_scope(file: str, scope_prefixes: list[str] | None) -> bool:
+    return not scope_prefixes or any(
+        file.startswith(prefix) for prefix in scope_prefixes
+    )
+
+
+def edge_counts(
+    store: GraphStore, scope_prefixes: list[str] | None = None
+) -> tuple[int, int, int]:
     """(edges_total, edges_resolved, edges_ambiguous).
 
     resolved: confidence >= 0.5 AND ambiguous_candidates is empty. The resolver
@@ -153,22 +168,34 @@ def edge_counts(store: GraphStore) -> tuple[int, int, int]:
     edge per candidate" counting convention M1 used when it stored these as
     N separate `edge` rows — a pure storage relocation, not a metric change.
     """
-    (resolved,) = store.conn.execute(
+    resolved_rows = store.conn.execute(
         """
-        SELECT COUNT(*) FROM edge
-        WHERE confidence >= ? AND ambiguous_candidates = '[]'
+        SELECT source.file FROM edge
+        JOIN node AS source ON source.id = edge.from_id
+        WHERE edge.confidence >= ? AND edge.ambiguous_candidates = '[]'
         """,
         (RESOLVED_MIN_CONFIDENCE,),
-    ).fetchone()
-    candidate_lists = store.conn.execute(
-        "SELECT candidates FROM unresolved_reference"
     ).fetchall()
-    ambiguous = sum(len(json.loads(row["candidates"])) for row in candidate_lists)
-    total = int(resolved) + ambiguous
-    return total, int(resolved), ambiguous
+    resolved = sum(1 for row in resolved_rows if _in_scope(row["file"], scope_prefixes))
+    candidate_rows = store.conn.execute(
+        """
+        SELECT unresolved_reference.candidates, source.file
+        FROM unresolved_reference
+        JOIN node AS source ON source.id = unresolved_reference.from_id
+        """
+    ).fetchall()
+    ambiguous = sum(
+        len(json.loads(row["candidates"]))
+        for row in candidate_rows
+        if _in_scope(row["file"], scope_prefixes)
+    )
+    total = resolved + ambiguous
+    return total, resolved, ambiguous
 
 
-def cross_file_dependent_coverage(store: GraphStore) -> tuple[int, int]:
+def cross_file_dependent_coverage(
+    store: GraphStore, scope_prefixes: list[str] | None = None
+) -> tuple[int, int]:
     """(symbol_bearing_files, files_with_resolved_incoming_cross_file_edge).
 
     Strict definition (deliberately not "files with any cross-file edge
@@ -180,14 +207,14 @@ def cross_file_dependent_coverage(store: GraphStore) -> tuple[int, int]:
     files = {
         row["file"]
         for row in store.conn.execute("SELECT DISTINCT file FROM node")
-        if row["file"]
+        if row["file"] and _in_scope(row["file"], scope_prefixes)
     }
     if not files:
         return 0, 0
 
     covered_rows = store.conn.execute(
         """
-        SELECT DISTINCT to_node.file AS covered_file
+        SELECT DISTINCT to_node.file AS covered_file, from_node.file AS source_file
         FROM edge
         JOIN node AS to_node ON to_node.id = edge.to_id
         JOIN node AS from_node ON from_node.id = edge.from_id
@@ -197,13 +224,24 @@ def cross_file_dependent_coverage(store: GraphStore) -> tuple[int, int]:
         """,
         (RESOLVED_MIN_CONFIDENCE,),
     ).fetchall()
-    covered = {row["covered_file"] for row in covered_rows}
+    covered = {
+        row["covered_file"]
+        for row in covered_rows
+        if _in_scope(row["source_file"], scope_prefixes)
+        and _in_scope(row["covered_file"], scope_prefixes)
+    }
     return len(files), len(covered & files)
 
 
-def symbol_bearing_file_count(store: GraphStore) -> int:
-    (count,) = store.conn.execute("SELECT COUNT(DISTINCT file) FROM node").fetchone()
-    return int(count)
+def symbol_bearing_file_count(
+    store: GraphStore, scope_prefixes: list[str] | None = None
+) -> int:
+    files = {
+        row["file"]
+        for row in store.conn.execute("SELECT DISTINCT file FROM node")
+        if row["file"] and _in_scope(row["file"], scope_prefixes)
+    }
+    return len(files)
 
 
 def fixed_query_set(store: GraphStore, limit: int = 20) -> list[str]:
@@ -319,6 +357,7 @@ def collect_metrics(
     name: str,
     workdir: Path,
     adapter: str = "repoweaver",
+    scope_prefixes: list[str] | None = None,
 ) -> BenchmarkMetrics:
     """Build the index once and derive every metric from that single build,
     plus one extra rebuild (into a separate DB) to check determinism."""
@@ -329,11 +368,13 @@ def collect_metrics(
         stats = Indexer(repo_root, store).build()
         store.commit()
 
-        java_files = count_java_files(repo_root)
-        parse_errors = count_parse_errors(repo_root)
-        edges_total, edges_resolved, edges_ambiguous = edge_counts(store)
-        symbol_files = symbol_bearing_file_count(store)
-        cfd_total, cfd_resolved = cross_file_dependent_coverage(store)
+        java_files = count_java_files(repo_root, scope_prefixes)
+        parse_errors = count_parse_errors(repo_root, scope_prefixes)
+        edges_total, edges_resolved, edges_ambiguous = edge_counts(
+            store, scope_prefixes
+        )
+        symbol_files = symbol_bearing_file_count(store, scope_prefixes)
+        cfd_total, cfd_resolved = cross_file_dependent_coverage(store, scope_prefixes)
         rebuild_hash = graph_signature(store)
         queries = fixed_query_set(store)
         query_samples = (
@@ -356,6 +397,7 @@ def collect_metrics(
         repo=str(repo_root),
         adapter=adapter,
         commit=_git_commit(repo_root),
+        scope_prefixes=scope_prefixes,
         java_files=java_files,
         symbol_files=symbol_files,
         parse_error_count=parse_errors,

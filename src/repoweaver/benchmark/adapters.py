@@ -32,7 +32,13 @@ class AdapterSkipped(Exception):
 class BenchmarkAdapter(Protocol):
     name: str
 
-    def run(self, repo_root: Path, name: str, workdir: Path) -> BenchmarkMetrics: ...
+    def run(
+        self,
+        repo_root: Path,
+        name: str,
+        workdir: Path,
+        scope_prefixes: list[str] | None = None,
+    ) -> BenchmarkMetrics: ...
 
 
 @dataclass
@@ -41,8 +47,20 @@ class RepoWeaverAdapter:
 
     name: str = "repoweaver"
 
-    def run(self, repo_root: Path, name: str, workdir: Path) -> BenchmarkMetrics:
-        return collect_metrics(repo_root, name=name, workdir=workdir, adapter=self.name)
+    def run(
+        self,
+        repo_root: Path,
+        name: str,
+        workdir: Path,
+        scope_prefixes: list[str] | None = None,
+    ) -> BenchmarkMetrics:
+        return collect_metrics(
+            repo_root,
+            name=name,
+            workdir=workdir,
+            adapter=self.name,
+            scope_prefixes=scope_prefixes,
+        )
 
 
 @dataclass
@@ -60,7 +78,13 @@ class ExternalCommandAdapter:
     name: str = "external"
     timeout_sec: float = 300.0
 
-    def run(self, repo_root: Path, name: str, workdir: Path) -> BenchmarkMetrics:
+    def run(
+        self,
+        repo_root: Path,
+        name: str,
+        workdir: Path,
+        scope_prefixes: list[str] | None = None,
+    ) -> BenchmarkMetrics:
         cmd = self.command.format(repo=repo_root, workdir=workdir)
         started = time.perf_counter()
         try:
@@ -92,6 +116,7 @@ class ExternalCommandAdapter:
         known_fields = set(BenchmarkMetrics.__dataclass_fields__)
         filtered = {k: v for k, v in payload.items() if k in known_fields}
         filtered.setdefault("index_time_sec", elapsed)
+        filtered.setdefault("scope_prefixes", scope_prefixes)
         return BenchmarkMetrics(
             name=name, repo=str(repo_root), adapter=self.name, **filtered
         )
@@ -106,7 +131,14 @@ class _OptionalCLIAdapter:
     cli_name: str
     name: str = "optional-cli"
 
-    def run(self, repo_root: Path, name: str, workdir: Path) -> BenchmarkMetrics:
+    def run(
+        self,
+        repo_root: Path,
+        name: str,
+        workdir: Path,
+        scope_prefixes: list[str] | None = None,
+    ) -> BenchmarkMetrics:
+        del scope_prefixes
         if shutil.which(self.cli_name) is None:
             raise AdapterSkipped(
                 f"{self.name}: '{self.cli_name}' not found on PATH — SKIP "
@@ -140,12 +172,18 @@ class GrepBaselineAdapter:
 
     name: str = "grep"
 
-    def run(self, repo_root: Path, name: str, workdir: Path) -> BenchmarkMetrics:
+    def run(
+        self,
+        repo_root: Path,
+        name: str,
+        workdir: Path,
+        scope_prefixes: list[str] | None = None,
+    ) -> BenchmarkMetrics:
         from repoweaver.benchmark.metrics import count_java_files, fixed_query_set
         from repoweaver.graph.store import GraphStore
         from repoweaver.indexer import Indexer
 
-        java_files = count_java_files(repo_root)
+        java_files = count_java_files(repo_root, scope_prefixes)
 
         # Reuse RepoWeaver's own symbol list purely to pick a fair, repo-agnostic
         # query set for the grep baseline — grep itself does no indexing.

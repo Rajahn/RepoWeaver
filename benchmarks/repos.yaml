@@ -9,7 +9,9 @@ repos:
   - name: gson
     url: https://github.com/google/gson
     commit: dae37cf0fe12235b76fb09f01118a0a8c8823f42
-    purpose: Comparable to CodeGraph's published 93.3% Java coverage number
+    scope_prefixes:
+      - gson/src/main/
+    purpose: Core production scope comparable to CodeGraph's published Java coverage benchmark
   - name: spring-petclinic
     url: https://github.com/spring-projects/spring-petclinic
     commit: 88e37c15cf6fc8490b01bc3e8e2c800cec1ac272

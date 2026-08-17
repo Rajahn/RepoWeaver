@@ -12,6 +12,10 @@ public class Codec {
         return null;
     }
 
+    public String fromJson(String json, Token token) {
+        return json;
+    }
+
     public void write(String value) {
     }
 

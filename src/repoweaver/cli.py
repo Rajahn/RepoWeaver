@@ -97,6 +97,44 @@ def serve(
 
 
 @app.command()
+def watch(
+    repo: str = typer.Argument(".", help="Path to the repository root."),
+    debounce_ms: int = typer.Option(
+        2000, "--debounce-ms", help="Debounce window for batching filesystem events."
+    ),
+) -> None:
+    """Watch a repository and keep the index fresh as `*.java` files change."""
+    from repoweaver.watcher import watch_and_sync
+
+    repo_root = Path(repo).resolve()
+    db_path = _db_path(repo_root)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if not db_path.exists():
+        print(f"No index found at {db_path} — running full build first.")
+        with GraphStore(db_path) as store:
+            stats = Indexer(repo_root, store).build()
+        print(
+            f"Indexed {stats.files} file(s): {stats.nodes} node(s), "
+            f"{stats.edges} edge(s) in {stats.elapsed_seconds:.2f}s"
+        )
+
+    def _report(changed: set[str], deleted: set[str], stats) -> None:
+        print(
+            f"sync: changed={len(changed)} deleted={len(deleted)} "
+            f"files={stats.files} nodes={stats.nodes} edges={stats.edges} "
+            f"unresolved={stats.unresolved} elapsed={stats.elapsed_seconds:.2f}s"
+        )
+
+    print(f"Watching {repo_root} (debounce={debounce_ms}ms). Ctrl-C to stop.")
+    with GraphStore(db_path) as store:
+        try:
+            watch_and_sync(repo_root, store, debounce_ms=debounce_ms, on_sync=_report)
+        except KeyboardInterrupt:
+            print("Stopped.")
+
+
+@app.command()
 def verify(
     level: str = typer.Option(
         "m1",
