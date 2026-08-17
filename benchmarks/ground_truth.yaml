@@ -1,0 +1,123 @@
+# Machine-verifiable correctness ground truth for RepoWeaver's indexer.
+#
+# Fixture: benchmarks/fixtures/gt_demo — a small, hand-written Java package
+# deliberately containing one genuine same-name ambiguity (two unrelated
+# classes each define `close()`; a third class calls `close()` with no
+# receiver, so the resolver cannot disambiguate) alongside unambiguous
+# CALLS/EXTENDS/IMPLEMENTS/IMPORTS edges. See docs/benchmark-methodology.md.
+#
+# `fabric benchmark run --repo benchmarks/fixtures/gt_demo --name gt_demo
+# --ground-truth benchmarks/ground_truth.yaml --output out.json` computes
+# node recall, edge precision/recall, and query top-k recall/MRR against
+# this file.
+version: 1
+fixture: benchmarks/fixtures/gt_demo
+
+# Every symbol the indexer is expected to find. Recall = matched / total.
+nodes:
+  - qualified_name: com.example.gt.Base
+    kind: interface
+  - qualified_name: com.example.gt.Base#op()
+    kind: method
+  - qualified_name: com.example.gt.AlphaWorker
+    kind: class
+  - qualified_name: com.example.gt.AlphaWorker#op()
+    kind: method
+  - qualified_name: com.example.gt.AlphaWorker#close()
+    kind: method
+  - qualified_name: com.example.gt.BetaWorker
+    kind: class
+  - qualified_name: com.example.gt.BetaWorker#op()
+    kind: method
+  - qualified_name: com.example.gt.BetaWorker#close()
+    kind: method
+  - qualified_name: com.example.gt.AbstractWorker
+    kind: class
+  - qualified_name: com.example.gt.AbstractWorker#log()
+    kind: method
+  - qualified_name: com.example.gt.GammaWorker
+    kind: class
+  - qualified_name: com.example.gt.GammaWorker#op()
+    kind: method
+  - qualified_name: com.example.gt.Router
+    kind: class
+  - qualified_name: com.example.gt.Router#shutdown()
+    kind: method
+  - qualified_name: com.example.gt.Entry
+    kind: class
+  - qualified_name: com.example.gt.Entry#run()
+    kind: method
+
+# Every edge the indexer is expected to produce, and whether it should be
+# *resolvable* (confidence >= 0.5 AND no ambiguous_candidates) or genuinely
+# ambiguous (same-name collision with no type/receiver information to
+# disambiguate). Precision/recall are computed only over edges whose
+# endpoints are both within this fixture's node set.
+edges:
+  - from: com.example.gt.AlphaWorker
+    to: com.example.gt.Base
+    type: IMPLEMENTS
+    resolvable: true
+  - from: com.example.gt.BetaWorker
+    to: com.example.gt.Base
+    type: IMPLEMENTS
+    resolvable: true
+  - from: com.example.gt.AbstractWorker
+    to: com.example.gt.Base
+    type: IMPLEMENTS
+    resolvable: true
+  - from: com.example.gt.GammaWorker
+    to: com.example.gt.AbstractWorker
+    type: EXTENDS
+    resolvable: true
+  - from: com.example.gt.Entry
+    to: com.example.gt.GammaWorker
+    type: IMPORTS
+    resolvable: true
+  - from: com.example.gt.GammaWorker#op()
+    to: com.example.gt.AbstractWorker#log()
+    type: CALLS
+    resolvable: true
+  - from: com.example.gt.Entry#run()
+    to: com.example.gt.GammaWorker#op()
+    type: CALLS
+    resolvable: true
+  - from: com.example.gt.Router#shutdown()
+    to: com.example.gt.AlphaWorker#close()
+    type: CALLS
+    resolvable: false  # by design: AlphaWorker#close() and BetaWorker#close()
+  - from: com.example.gt.Router#shutdown()                # share a simple name and no
+    to: com.example.gt.BetaWorker#close()                  # receiver/type narrows the call
+    type: CALLS
+    resolvable: false
+
+# Fixed retrieval queries used for top-k recall / MRR. `expected_any_of` is
+# an OR-set: a hit on any qualified_name in the list counts as relevant
+# (used for the deliberately-ambiguous `close`/`op` queries).
+queries:
+  - query: GammaWorker
+    task: locate
+    k: 5
+    expected_any_of: [com.example.gt.GammaWorker]
+  - query: Router
+    task: locate
+    k: 5
+    expected_any_of: [com.example.gt.Router]
+  - query: AbstractWorker
+    task: locate
+    k: 5
+    expected_any_of: [com.example.gt.AbstractWorker]
+  - query: close
+    task: locate
+    k: 5
+    expected_any_of:
+      - com.example.gt.AlphaWorker#close()
+      - com.example.gt.BetaWorker#close()
+  - query: op
+    task: locate
+    k: 5
+    expected_any_of:
+      - com.example.gt.Base#op()
+      - com.example.gt.AlphaWorker#op()
+      - com.example.gt.BetaWorker#op()
+      - com.example.gt.GammaWorker#op()

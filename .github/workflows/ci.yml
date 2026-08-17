@@ -21,13 +21,16 @@ jobs:
         run: pip install -e ".[dev]"
 
       - name: Lint
-        run: ruff check src/ tests/
+        run: ruff check src/ tests/ scripts/
 
       - name: Test
         run: pytest tests/ -v
 
       - name: M1 acceptance gate
         run: fabric verify --level m1
+
+      - name: Benchmark semantics gate
+        run: fabric verify --level benchmark
 
       - name: Public-source leak scan
         run: python scripts/check_public.py

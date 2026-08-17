@@ -55,10 +55,12 @@ def _built_fixture_repo():
 
 
 def run_verification(level: str, repo: Path) -> VerifyResult:
+    if level == "benchmark":
+        return _run_benchmark_verification()
     if level != "m1":
         return VerifyResult(
             False,
-            [f"Level '{level}' is not implemented in M1. Only 'm1' is supported."],
+            [f"Level '{level}' is not implemented. Supported: 'm1', 'benchmark'."],
         )
 
     report: list[str] = [f"RepoWeaver verify --level m1  (fixture: {_FIXTURE})"]
@@ -210,3 +212,137 @@ def run_verification(level: str, repo: Path) -> VerifyResult:
     report.append("")
     report.append("PASS" if passed else f"FAIL ({c.failures} check(s) failed)")
     return VerifyResult(passed, report)
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_GROUND_TRUTH = _PROJECT_ROOT / "benchmarks" / "ground_truth.yaml"
+_GT_FIXTURE = _PROJECT_ROOT / "benchmarks" / "fixtures" / "gt_demo"
+_SOTA_TARGETS = _PROJECT_ROOT / "benchmarks" / "sota-targets.yaml"
+
+
+def _run_benchmark_verification() -> VerifyResult:
+    """`fabric verify --level benchmark` — a CI-safe check of the benchmark
+    infrastructure itself, run only against the bundled gt_demo fixture (no
+    cloning of gson/okhttp/etc). It asserts two different things:
+
+    1. The metric *definitions* are stable on a fixture whose expected graph
+       shape is known exactly (regression protection for metrics.py).
+    2. The tool's own correctness (node recall, edge precision/recall,
+       ambiguity flagging, query top-k/MRR) is 1.0 on that fixture.
+
+    It deliberately does NOT require ambiguous_edge_rate/coverage to clear
+    production release gates here — gt_demo is a small adversarial fixture
+    built to contain a genuine ambiguity, so those two gates are *expected*
+    to fail on it (see benchmarks/sota-targets.yaml and
+    docs/benchmark-methodology.md). Real-repo-scale gate compliance is
+    tracked in benchmarks/baselines/, not gated in CI.
+    """
+    from repoweaver.benchmark.compare import evaluate_gates, load_release_gates
+    from repoweaver.benchmark.runner import run_benchmark
+
+    report: list[str] = ["RepoWeaver verify --level benchmark"]
+    c = _Check(report)
+
+    if not _GROUND_TRUTH.exists() or not _GT_FIXTURE.exists():
+        c.check("ground truth fixture present", False, str(_GROUND_TRUTH))
+        report.append("FAIL — cannot continue without fixture")
+        return VerifyResult(False, report)
+
+    result = run_benchmark(
+        repo=_GT_FIXTURE,
+        name="gt_demo",
+        adapter="repoweaver",
+        ground_truth=_GROUND_TRUTH,
+    )
+
+    report.append("-- metric definitions (regression, exact values on gt_demo) --")
+    c.check("run status is MEASURED", result.get("status") == "MEASURED", str(result))
+    c.check("nodes == 16", result.get("nodes") == 16, str(result.get("nodes")))
+    c.check(
+        "edges_total == 9",
+        result.get("edges_total") == 9,
+        str(result.get("edges_total")),
+    )
+    c.check(
+        "edges_resolved == 7 (confidence>=0.5, non-ambiguous)",
+        result.get("edges_resolved") == 7,
+        str(result.get("edges_resolved")),
+    )
+    c.check(
+        "edges_ambiguous == 2 (the deliberate close() collision)",
+        result.get("edges_ambiguous") == 2,
+        str(result.get("edges_ambiguous")),
+    )
+    c.check(
+        "ambiguous_edge_rate == 2/9",
+        result.get("ambiguous_edge_rate") == _approx(2 / 9),
+        str(result.get("ambiguous_edge_rate")),
+    )
+    c.check(
+        "cross_file_dependent_coverage == 3/7",
+        result.get("cross_file_dependent_coverage") == _approx(3 / 7),
+        str(result.get("cross_file_dependent_coverage")),
+    )
+    c.check(
+        "deterministic_rebuild is True",
+        result.get("deterministic_rebuild") is True,
+        str(result.get("deterministic_rebuild")),
+    )
+
+    report.append("-- correctness (ground truth) --")
+    correctness = result.get("correctness") or {}
+    for key in (
+        "node_recall",
+        "edge_precision",
+        "edge_recall",
+        "query_topk_recall",
+        "query_mrr",
+    ):
+        c.check(f"{key} == 1.0", correctness.get(key) == 1.0, str(correctness.get(key)))
+    c.check(
+        "expected ambiguous pair correctly flagged",
+        correctness.get("expected_ambiguous_correctly_flagged_rate") == 1.0,
+        str(correctness.get("expected_ambiguous_correctly_flagged_rate")),
+    )
+
+    report.append("-- compare() gate mechanism --")
+    gates = load_release_gates(_SOTA_TARGETS)
+    comparison = evaluate_gates(result, gates)
+    gate_status = {g.key: g.status for g in comparison.gates}
+    c.check(
+        "fixture-correctness gates PASS",
+        all(
+            gate_status.get(k) == "PASS"
+            for k in (
+                "fixture_node_recall",
+                "fixture_edge_precision",
+                "fixture_edge_recall",
+                "deterministic_rebuild",
+            )
+        ),
+        str(gate_status),
+    )
+    c.check(
+        "ambiguity/coverage gates correctly reported FAIL on this adversarial fixture",
+        gate_status.get("ambiguous_edge_rate") == "FAIL"
+        and gate_status.get("cross_file_dependent_coverage") == "FAIL",
+        str(gate_status),
+    )
+    c.check(
+        "overall comparison status is FAIL (by design)", comparison.status == "FAIL"
+    )
+
+    passed = c.failures == 0
+    report.append("")
+    report.append("PASS" if passed else f"FAIL ({c.failures} check(s) failed)")
+    return VerifyResult(passed, report)
+
+
+def _approx(target: float, tol: float = 1e-9) -> object:
+    """Tiny float-equality helper so this module doesn't need a pytest import."""
+
+    class _Approx:
+        def __eq__(self, other: object) -> bool:
+            return isinstance(other, (int, float)) and abs(other - target) < tol
+
+    return _Approx()

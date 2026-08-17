@@ -1108,6 +1108,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastmcp" },
+    { name = "pyyaml" },
     { name = "rich" },
     { name = "tree-sitter" },
     { name = "tree-sitter-java" },
@@ -1124,6 +1125,7 @@ dev = [
 requires-dist = [
     { name = "fastmcp", specifier = ">=2.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
+    { name = "pyyaml", specifier = ">=6" },
     { name = "rich", specifier = ">=13" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.5" },
     { name = "tree-sitter", specifier = ">=0.23" },

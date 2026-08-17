@@ -1,0 +1,24 @@
+# Pinned public benchmark repositories.
+#
+# Commits are frozen so benchmark numbers are reproducible: re-running
+# `fabric benchmark run` against the same commit must always index the same
+# bytes. These repos are NOT cloned in CI (see docs/benchmark-methodology.md)
+# — only the bundled fixtures under benchmarks/fixtures/ run in CI.
+version: 1
+repos:
+  - name: gson
+    url: https://github.com/google/gson
+    commit: dae37cf0fe12235b76fb09f01118a0a8c8823f42
+    purpose: Comparable to CodeGraph's published 93.3% Java coverage number
+  - name: spring-petclinic
+    url: https://github.com/spring-projects/spring-petclinic
+    commit: 88e37c15cf6fc8490b01bc3e8e2c800cec1ac272
+    purpose: Spring DI-heavy; tests injection-aware edges (known blind spot)
+  - name: okhttp
+    url: https://github.com/square/okhttp
+    commit: 3b45ba0ad05a39a85c054169563a967ff56d1f6b
+    purpose: Call-chain depth
+  - name: mybatis-3
+    url: https://github.com/mybatis/mybatis-3
+    commit: 69ee03634a27808553fede707dcc4ef70478e0be
+    purpose: Generated-code noise filtering

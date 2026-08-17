@@ -7,6 +7,7 @@ from pathlib import Path
 import typer
 
 from repoweaver import __version__
+from repoweaver.benchmark.cli import app as benchmark_app
 from repoweaver.graph.store import GraphStore
 from repoweaver.indexer import Indexer
 from repoweaver.protocol import inject_agents_md
@@ -16,6 +17,8 @@ app = typer.Typer(
     help="RepoWeaver: code context fabric for AI coding agents.",
     no_args_is_help=True,
 )
+
+app.add_typer(benchmark_app, name="benchmark")
 
 
 def _db_path(repo_root: Path) -> Path:

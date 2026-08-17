@@ -1,0 +1,70 @@
+# SOTA alignment targets for RepoWeaver `fabric benchmark compare`.
+#
+# Two distinct kinds of number live here — do not conflate them:
+#
+# 1. `published_reference` — numbers published by *other* tools, using
+#    *their* definitions, which may not match ours. Recorded for honest
+#    comparison only. Never used as a pass/fail gate: we cannot verify their
+#    methodology, and "coverage" without a matching precision/ambiguity
+#    number is not a comparable metric (see docs/benchmark-methodology.md).
+#
+# 2. `release_gates` — RepoWeaver's own hard gates, computed from metrics
+#    with definitions fully specified in docs/benchmark-methodology.md and
+#    src/repoweaver/benchmark/metrics.py. `fabric benchmark compare` fails
+#    the run if any gate fails.
+version: 1
+
+published_reference:
+  - source: CodeGraph README (https://github.com/colbymchenry/codegraph)
+    repo: google/gson
+    metric: coverage
+    value: 0.933
+    definition: >-
+      CodeGraph defines coverage as the share of symbol-bearing files with at
+      least one resolved cross-file dependent. RepoWeaver measures the same
+      file-level shape but additionally requires confidence>=0.5 and excludes
+      every edge with ambiguous candidates. The 0.933 value is therefore a
+      directional SOTA reference until both tools are run on the pinned commit
+      and their resolved-edge policies are audited side by side.
+    retrieved: "2026-08-18"
+
+release_gates:
+  parse_error_rate:
+    op: "<="
+    value: 0.0
+    description: Fraction of *.java files that fail to parse (tree-sitter has_error).
+  ambiguous_edge_rate:
+    op: "<="
+    value: 0.10
+    description: Fraction of all edges with non-empty ambiguous_candidates.
+  cross_file_dependent_coverage:
+    op: ">="
+    value: 0.90
+    description: >-
+      Fraction of symbol-bearing files with >=1 resolved (confidence>=0.5,
+      non-ambiguous) incoming cross-file edge.
+  fixture_node_recall:
+    op: ">="
+    value: 0.98
+    description: Node recall against benchmarks/ground_truth.yaml.
+  fixture_edge_precision:
+    op: ">="
+    value: 0.95
+    description: Edge precision against benchmarks/ground_truth.yaml.
+  fixture_edge_recall:
+    op: ">="
+    value: 0.90
+    description: Edge recall against benchmarks/ground_truth.yaml.
+  deterministic_rebuild:
+    op: "=="
+    value: true
+    description: Rebuilding the same commit twice must produce an identical graph hash.
+
+# Recorded for trend-watching only — no threshold yet. Setting an arbitrary
+# number before we have baseline distributions across repos of different
+# sizes would just be theater.
+baseline_only:
+  - query_latency_ms_p50
+  - query_latency_ms_p95
+  - context_tokens_p50
+  - context_tokens_p95

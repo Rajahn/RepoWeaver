@@ -1,0 +1,112 @@
+{
+  "adapter": "repoweaver",
+  "ambiguous_edge_rate": 0.8930186415651532,
+  "commit": "dae37cf0fe12235b76fb09f01118a0a8c8823f42",
+  "context_tokens_p50": 677.0,
+  "context_tokens_p95": 4000.0,
+  "correctness": {
+    "edge_precision": 1.0,
+    "edge_recall": 1.0,
+    "edges_expected_resolvable": 7,
+    "edges_predicted_resolved_in_scope": 7,
+    "edges_true_positive": 7,
+    "expected_ambiguous_correctly_flagged_rate": 1.0,
+    "expected_ambiguous_total": 2,
+    "ground_truth_ids_unresolved": 0,
+    "node_recall": 1.0,
+    "nodes_expected": 16,
+    "nodes_found": 16,
+    "nodes_missing": [],
+    "query_cases": [
+      {
+        "expected_any_of": [
+          "com.example.gt.GammaWorker"
+        ],
+        "k": 5,
+        "query": "GammaWorker",
+        "rank": 1,
+        "top_k_qualified_names": [
+          "com.example.gt.GammaWorker",
+          "com.example.gt.GammaWorker#op()"
+        ]
+      },
+      {
+        "expected_any_of": [
+          "com.example.gt.Router"
+        ],
+        "k": 5,
+        "query": "Router",
+        "rank": 1,
+        "top_k_qualified_names": [
+          "com.example.gt.Router",
+          "com.example.gt.Router#shutdown()"
+        ]
+      },
+      {
+        "expected_any_of": [
+          "com.example.gt.AbstractWorker"
+        ],
+        "k": 5,
+        "query": "AbstractWorker",
+        "rank": 1,
+        "top_k_qualified_names": [
+          "com.example.gt.AbstractWorker",
+          "com.example.gt.GammaWorker",
+          "com.example.gt.AbstractWorker#log()"
+        ]
+      },
+      {
+        "expected_any_of": [
+          "com.example.gt.AlphaWorker#close()",
+          "com.example.gt.BetaWorker#close()"
+        ],
+        "k": 5,
+        "query": "close",
+        "rank": 1,
+        "top_k_qualified_names": [
+          "com.example.gt.AlphaWorker#close()",
+          "com.example.gt.BetaWorker#close()"
+        ]
+      },
+      {
+        "expected_any_of": [
+          "com.example.gt.AlphaWorker#op()",
+          "com.example.gt.Base#op()",
+          "com.example.gt.BetaWorker#op()",
+          "com.example.gt.GammaWorker#op()"
+        ],
+        "k": 5,
+        "query": "op",
+        "rank": 1,
+        "top_k_qualified_names": [
+          "com.example.gt.GammaWorker#op()",
+          "com.example.gt.AlphaWorker#op()",
+          "com.example.gt.Base#op()",
+          "com.example.gt.BetaWorker#op()"
+        ]
+      }
+    ],
+    "query_mrr": 1.0,
+    "query_topk_recall": 1.0
+  },
+  "cross_file_dependent_coverage": 0.3534136546184739,
+  "cross_file_dependent_resolved": 88,
+  "cross_file_dependent_total": 249,
+  "db_size_bytes": 209817600,
+  "deterministic_rebuild": true,
+  "deterministic_rebuild_hash": "b7543ed8c483664c8bd4a678dbb44a13d07fca359fc69c930294b666e4c361bc",
+  "edges_ambiguous": 38707,
+  "edges_resolved": 4637,
+  "edges_total": 43344,
+  "index_time_sec": 5.937016353011131,
+  "java_files": 264,
+  "name": "v0.1.0-gson",
+  "nodes": 4866,
+  "parse_error_count": 0,
+  "parse_error_rate": 0.0,
+  "query_latency_ms_p50": 1.659151166677475,
+  "query_latency_ms_p95": 6.169252470135691,
+  "repo": "google/gson@dae37cf0fe12235b76fb09f01118a0a8c8823f42",
+  "status": "MEASURED",
+  "symbol_files": 249
+}

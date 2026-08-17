@@ -53,6 +53,30 @@ Benchmarks use public repos only — no proprietary code enters this repository.
 | `square/okhttp` | Call-chain depth |
 | `mybatis/mybatis-3` | Generated-code noise filtering |
 
+## SOTA alignment — measured, not claimed
+
+RepoWeaver ships a reproducible benchmark harness and refuses to count
+low-confidence or ambiguous edges as resolved coverage.
+
+| Metric on pinned `google/gson` | v0.1.0 baseline | Alignment target | Status |
+|---|---:|---:|---|
+| Resolved cross-file dependent coverage | 35.3% | >=90% (CodeGraph publishes 93.3% under its policy) | ❌ gap |
+| Ambiguous edge rate | 89.3% | <=10% | ❌ gap |
+
+This baseline is intentionally visible: v0.1 proves the closed loop, not SOTA
+resolution quality. The next engineering work targets receiver/type resolution,
+disambiguation and framework entry points. Coverage may not improve by adding
+ambiguous edges; release gates pair it with ambiguity and fixture precision.
+
+```bash
+fabric verify --level benchmark
+fabric benchmark run --repo /path/to/gson --name gson --output gson.json
+fabric benchmark compare --candidate gson.json --target benchmarks/sota-targets.yaml
+```
+
+See [benchmark methodology](docs/benchmark-methodology.md) and the checked-in
+[v0.1 Gson baseline](benchmarks/baselines/v0.1.0-gson.json).
+
 ## Install
 
 ```bash
