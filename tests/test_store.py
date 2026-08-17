@@ -18,14 +18,22 @@ def _node(nid: str, qname: str, simple: str, file: str = "A.java") -> NodeRow:
 
 def test_replace_file_nodes_insert_update_delete(in_memory_store: GraphStore):
     store = in_memory_store
-    store.replace_file_nodes("A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B")])
+    store.replace_file_nodes(
+        "A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B")]
+    )
     store.commit()
     assert store.node_count() == 2
 
     # Re-index the same file with n2 removed and n1 updated (new span).
     updated = NodeRow(
-        id="n1", kind="class", qualified_name="pkg.A", simple_name="A",
-        file="A.java", span_start=5, span_end=20, signature="class A",
+        id="n1",
+        kind="class",
+        qualified_name="pkg.A",
+        simple_name="A",
+        file="A.java",
+        span_start=5,
+        span_end=20,
+        signature="class A",
     )
     store.replace_file_nodes("A.java", [updated])
     store.commit()
@@ -34,16 +42,34 @@ def test_replace_file_nodes_insert_update_delete(in_memory_store: GraphStore):
     assert store.get_node("n2") is None
 
 
-def test_replace_file_edges_merges_duplicates_and_tracks_evidence(in_memory_store: GraphStore):
+def test_replace_file_edges_merges_duplicates_and_tracks_evidence(
+    in_memory_store: GraphStore,
+):
     store = in_memory_store
-    store.replace_file_nodes("A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B")])
+    store.replace_file_nodes(
+        "A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B")]
+    )
     store.commit()
 
     edges = [
-        EdgeRow(from_id="n1", to_id="n2", type="CALLS", provenance="tree_sitter_java",
-                confidence=0.7, file="A.java", line=5),
-        EdgeRow(from_id="n1", to_id="n2", type="CALLS", provenance="tree_sitter_java",
-                confidence=0.7, file="A.java", line=9),
+        EdgeRow(
+            from_id="n1",
+            to_id="n2",
+            type="CALLS",
+            provenance="tree_sitter_java",
+            confidence=0.7,
+            file="A.java",
+            line=5,
+        ),
+        EdgeRow(
+            from_id="n1",
+            to_id="n2",
+            type="CALLS",
+            provenance="tree_sitter_java",
+            confidence=0.7,
+            file="A.java",
+            line=9,
+        ),
     ]
     store.replace_file_edges("A.java", edges, parser_version="test-1")
     store.commit()
@@ -89,11 +115,23 @@ def test_fts_search_finds_by_simple_name(in_memory_store: GraphStore):
 
 def test_neighbors_respects_min_confidence(in_memory_store: GraphStore):
     store = in_memory_store
-    store.replace_file_nodes("A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B")])
+    store.replace_file_nodes(
+        "A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B")]
+    )
     store.commit()
     store.replace_file_edges(
         "A.java",
-        [EdgeRow(from_id="n1", to_id="n2", type="CALLS", provenance="p", confidence=0.3, file="A.java", line=1)],
+        [
+            EdgeRow(
+                from_id="n1",
+                to_id="n2",
+                type="CALLS",
+                provenance="p",
+                confidence=0.3,
+                file="A.java",
+                line=1,
+            )
+        ],
         parser_version="v1",
     )
     store.commit()
@@ -120,11 +158,23 @@ def test_is_fresh(in_memory_store: GraphStore):
 
 def test_delete_file_cascades_edges(in_memory_store: GraphStore):
     store = in_memory_store
-    store.replace_file_nodes("A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B", file="B.java")])
+    store.replace_file_nodes(
+        "A.java", [_node("n1", "pkg.A", "A"), _node("n2", "pkg.B", "B", file="B.java")]
+    )
     store.commit()
     store.replace_file_edges(
         "A.java",
-        [EdgeRow(from_id="n1", to_id="n2", type="CALLS", provenance="p", confidence=1.0, file="A.java", line=1)],
+        [
+            EdgeRow(
+                from_id="n1",
+                to_id="n2",
+                type="CALLS",
+                provenance="p",
+                confidence=1.0,
+                file="A.java",
+                line=1,
+            )
+        ],
         parser_version="v1",
     )
     store.upsert_file_meta("A.java", "h", 1)

@@ -52,11 +52,13 @@ class SearchQuery:
 class SearchEngine:
     """Hybrid retrieval: BM25 full-text seed + PageRank-weighted graph proximity."""
 
-    def __init__(self, store: "GraphStore") -> None:
+    def __init__(self, store: GraphStore) -> None:
         self.store = store
 
     def search(self, query: SearchQuery) -> list[SearchResult]:
-        bm25_hits = self.bm25_candidates(query.query, limit=max(50, query.max_results * 3))
+        bm25_hits = self.bm25_candidates(
+            query.query, limit=max(50, query.max_results * 3)
+        )
         exact = self._exact_symbol_hits(query.query)
         by_id: dict[str, SearchResult] = {}
         for hit in bm25_hits + exact:
@@ -109,7 +111,9 @@ class SearchEngine:
         for r in candidates:
             pr = pagerank_scores.get(r.node_id, 0.0)
             r.pagerank_score = pr
-            r.score = BM25_WEIGHT * (r.bm25_score / max_bm25) + PAGERANK_WEIGHT * (pr / max_pr)
+            r.score = BM25_WEIGHT * (r.bm25_score / max_bm25) + PAGERANK_WEIGHT * (
+                pr / max_pr
+            )
             out.append(r)
         return out
 
@@ -118,7 +122,9 @@ class SearchEngine:
         if not q:
             return []
         out = []
-        for node in self.store.find_by_qualified_name(q) + self.store.find_by_simple_name(q):
+        for node in self.store.find_by_qualified_name(
+            q
+        ) + self.store.find_by_simple_name(q):
             out.append(
                 SearchResult(
                     node_id=node["id"],
@@ -137,7 +143,7 @@ class SearchEngine:
 
 
 def personalized_pagerank(
-    store: "GraphStore",
+    store: GraphStore,
     seeds: dict[str, float],
     depth: int = 2,
     min_confidence: float = 0.0,

@@ -20,9 +20,13 @@ def test_explore_understand_returns_slices_and_contract_shape(built_javademo):
 def test_explore_impact_reports_blast_radius(built_javademo):
     result = explore(query="format", task="impact", repo=str(built_javademo))
     assert "blast_radius" in result
-    assert any(b["qualified_name"].endswith("greet(String)") for b in result["blast_radius"]) or result[
-        "blast_radius"
-    ]
+    assert (
+        any(
+            b["qualified_name"].endswith("greet(String)")
+            for b in result["blast_radius"]
+        )
+        or result["blast_radius"]
+    )
 
 
 def test_explore_debug_returns_call_path(built_javademo):
@@ -31,8 +35,15 @@ def test_explore_debug_returns_call_path(built_javademo):
 
 
 def test_explore_token_budget_trims_slices(built_javademo):
-    tight = explore(query="Greeter", task="understand", repo=str(built_javademo), max_tokens=1)
-    wide = explore(query="Greeter", task="understand", repo=str(built_javademo), max_tokens=1_000_000)
+    tight = explore(
+        query="Greeter", task="understand", repo=str(built_javademo), max_tokens=1
+    )
+    wide = explore(
+        query="Greeter",
+        task="understand",
+        repo=str(built_javademo),
+        max_tokens=1_000_000,
+    )
     assert len(tight["slices"]) <= len(wide["slices"])
 
 

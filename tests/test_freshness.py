@@ -25,9 +25,7 @@ def test_check_reports_stale_after_file_content_changes(built_javademo):
 
 def test_check_reports_stale_after_new_file_added(built_javademo):
     new_file = built_javademo / "com/example/demo/Extra.java"
-    new_file.write_text(
-        "package com.example.demo;\n\npublic class Extra {\n}\n"
-    )
+    new_file.write_text("package com.example.demo;\n\npublic class Extra {\n}\n")
     with GraphStore(built_javademo / ".repoweaver" / "graph.db") as store:
         indexer = Indexer(built_javademo, store)
         fresh, stale = store.is_fresh(indexer.current_file_hashes())

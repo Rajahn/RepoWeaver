@@ -1,5 +1,6 @@
-import repoweaver
 from typer.testing import CliRunner
+
+import repoweaver
 from repoweaver.cli import app
 
 

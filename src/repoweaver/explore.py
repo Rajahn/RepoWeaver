@@ -13,7 +13,7 @@ from repoweaver.search.engine import SearchEngine, SearchQuery, personalized_pag
 BLIND_SPOTS = (
     "Static analysis only. Not represented: Spring bean injection dispatch beyond "
     "declared type, MQ listener call targets, reflection, config-driven routing, "
-    "generated code (MyBatis Example, etc.). \"No callers found\" != dead code. "
+    'generated code (MyBatis Example, etc.). "No callers found" != dead code. '
     "Always verify with grep/source before concluding."
 )
 
@@ -30,7 +30,11 @@ def _estimate_tokens(text: str) -> int:
 
 def _read_slice(repo_root: Path, file: str, span_start: int, span_end: int) -> str:
     try:
-        lines = (repo_root / file).read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = (
+            (repo_root / file)
+            .read_text(encoding="utf-8", errors="replace")
+            .splitlines()
+        )
     except OSError:
         return ""
     start = max(span_start - 1, 0)
@@ -38,13 +42,17 @@ def _read_slice(repo_root: Path, file: str, span_start: int, span_end: int) -> s
     return "\n".join(lines[start:end])
 
 
-def _make_slice(repo_root: Path, node: dict, confidence: float, provenance: str) -> dict:
+def _make_slice(
+    repo_root: Path, node: dict, confidence: float, provenance: str
+) -> dict:
     return {
         "node_id": node["id"],
         "file": node["file"],
         "span_start": node["span_start"],
         "span_end": node["span_end"],
-        "source": _read_slice(repo_root, node["file"], node["span_start"], node["span_end"]),
+        "source": _read_slice(
+            repo_root, node["file"], node["span_start"], node["span_end"]
+        ),
         "qualified_name": node["qualified_name"],
         "confidence": confidence,
         "provenance": provenance,
@@ -135,7 +143,13 @@ def explore(
         freshness = _freshness(store, repo_root)
         engine = SearchEngine(store)
         seeds = engine.search(
-            SearchQuery(query=query, max_results=30, min_confidence=min_confidence, depth=depth, task=task)
+            SearchQuery(
+                query=query,
+                max_results=30,
+                min_confidence=min_confidence,
+                depth=depth,
+                task=task,
+            )
         )
 
         response = _base_response(query, task, repo)
@@ -150,11 +164,24 @@ def explore(
             return response
 
         if task == "impact":
-            _fill_impact(response, store, repo_root, seeds[0], depth, min_confidence, max_tokens)
+            _fill_impact(
+                response, store, repo_root, seeds[0], depth, min_confidence, max_tokens
+            )
         elif task == "debug":
-            _fill_debug(response, store, repo_root, query, seeds, depth, min_confidence, max_tokens)
+            _fill_debug(
+                response,
+                store,
+                repo_root,
+                query,
+                seeds,
+                depth,
+                min_confidence,
+                max_tokens,
+            )
         else:
-            _fill_understand_or_locate(response, store, repo_root, seeds, depth, min_confidence, max_tokens)
+            _fill_understand_or_locate(
+                response, store, repo_root, seeds, depth, min_confidence, max_tokens
+            )
 
         return response
 
@@ -166,16 +193,25 @@ def _check_ambiguity(query: str, seeds: list) -> list[dict] | None:
     distinct_qnames = {s.qualified_name for s in seeds if s.simple_name == bare}
     if len(distinct_qnames) < 2:
         return None
-    top = sorted((s for s in seeds if s.simple_name == bare), key=lambda s: s.score, reverse=True)
+    top = sorted(
+        (s for s in seeds if s.simple_name == bare), key=lambda s: s.score, reverse=True
+    )
     if len(top) >= 2 and top[0].score > top[1].score * 1.5:
         return None  # a clear winner — not ambiguous
     return [
-        {"node_id": s.node_id, "qualified_name": s.qualified_name, "file": s.file, "score": s.score}
+        {
+            "node_id": s.node_id,
+            "qualified_name": s.qualified_name,
+            "file": s.file,
+            "score": s.score,
+        }
         for s in top
     ]
 
 
-def _fill_understand_or_locate(response, store, repo_root, seeds, depth, min_confidence, max_tokens) -> None:
+def _fill_understand_or_locate(
+    response, store, repo_root, seeds, depth, min_confidence, max_tokens
+) -> None:
     slices: list[dict] = []
     visited: set[str] = set()
     nodes_visited = 0
@@ -189,23 +225,33 @@ def _fill_understand_or_locate(response, store, repo_root, seeds, depth, min_con
         if node is None:
             continue
         nodes_visited += 1
-        slices.append(_make_slice(repo_root, node, confidence=1.0, provenance="tree_sitter_java"))
+        slices.append(
+            _make_slice(repo_root, node, confidence=1.0, provenance="tree_sitter_java")
+        )
 
-        for neighbor, edge_type, confidence in store.neighbors(seed.node_id, "out", min_confidence):
+        for neighbor, edge_type, confidence in store.neighbors(
+            seed.node_id, "out", min_confidence
+        ):
             edges_traversed += 1
             if neighbor["id"] in visited:
                 continue
             visited.add(neighbor["id"])
             nodes_visited += 1
-            slices.append(_make_slice(repo_root, neighbor, confidence, "tree_sitter_java"))
+            slices.append(
+                _make_slice(repo_root, neighbor, confidence, "tree_sitter_java")
+            )
 
     response["slices"] = _trim_to_budget(slices, max_tokens)
     response["stats"]["nodes_visited"] = nodes_visited
     response["stats"]["edges_traversed"] = edges_traversed
-    response["stats"]["tokens_estimated"] = sum(_estimate_tokens(s["source"]) for s in response["slices"])
+    response["stats"]["tokens_estimated"] = sum(
+        _estimate_tokens(s["source"]) for s in response["slices"]
+    )
 
 
-def _fill_impact(response, store, repo_root, seed, depth, min_confidence, max_tokens) -> None:
+def _fill_impact(
+    response, store, repo_root, seed, depth, min_confidence, max_tokens
+) -> None:
     seed_node = store.get_node(seed.node_id)
     if seed_node is None:
         return
@@ -220,7 +266,9 @@ def _fill_impact(response, store, repo_root, seed, depth, min_confidence, max_to
     for hop in range(1, depth + 1):
         next_frontier = []
         for nid in frontier:
-            for caller, edge_type, confidence in store.neighbors(nid, "in", min_confidence):
+            for caller, edge_type, confidence in store.neighbors(
+                nid, "in", min_confidence
+            ):
                 edges_traversed += 1
                 if caller["id"] in visited:
                     continue
@@ -239,7 +287,9 @@ def _fill_impact(response, store, repo_root, seed, depth, min_confidence, max_to
                         "risk": risk,
                     }
                 )
-                slices.append(_make_slice(repo_root, caller, confidence, "tree_sitter_java"))
+                slices.append(
+                    _make_slice(repo_root, caller, confidence, "tree_sitter_java")
+                )
         frontier = next_frontier
         if not frontier:
             break
@@ -248,7 +298,9 @@ def _fill_impact(response, store, repo_root, seed, depth, min_confidence, max_to
     response["blast_radius"] = blast_radius
     response["stats"]["nodes_visited"] = nodes_visited
     response["stats"]["edges_traversed"] = edges_traversed
-    response["stats"]["tokens_estimated"] = sum(_estimate_tokens(s["source"]) for s in response["slices"])
+    response["stats"]["tokens_estimated"] = sum(
+        _estimate_tokens(s["source"]) for s in response["slices"]
+    )
 
 
 def _risk_level(depth: int, confidence: float) -> str:
@@ -262,25 +314,39 @@ def _risk_level(depth: int, confidence: float) -> str:
 _DEBUG_SPLIT = re.compile(r"\s*(?:->|to|→)\s*", re.IGNORECASE)
 
 
-def _fill_debug(response, store, repo_root, query, seeds, depth, min_confidence, max_tokens) -> None:
+def _fill_debug(
+    response, store, repo_root, query, seeds, depth, min_confidence, max_tokens
+) -> None:
     parts = [p for p in _DEBUG_SPLIT.split(query.strip()) if p]
     from_seed = seeds[0]
     to_seed = None
     if len(parts) >= 2:
         engine = SearchEngine(store)
         to_hits = engine.search(
-            SearchQuery(query=parts[-1], max_results=1, min_confidence=min_confidence, depth=depth, task="debug")
+            SearchQuery(
+                query=parts[-1],
+                max_results=1,
+                min_confidence=min_confidence,
+                depth=depth,
+                task="debug",
+            )
         )
         if to_hits:
             to_seed = to_hits[0]
 
     if to_seed is None:
-        _fill_understand_or_locate(response, store, repo_root, seeds, depth, min_confidence, max_tokens)
+        _fill_understand_or_locate(
+            response, store, repo_root, seeds, depth, min_confidence, max_tokens
+        )
         response["call_path"] = []
         return
 
     path, nodes_visited, edges_traversed = _shortest_path(
-        store, from_seed.node_id, to_seed.node_id, min_confidence, max_hops=max(depth, 4)
+        store,
+        from_seed.node_id,
+        to_seed.node_id,
+        min_confidence,
+        max_hops=max(depth, 4),
     )
 
     call_path = []
@@ -306,7 +372,9 @@ def _fill_debug(response, store, repo_root, query, seeds, depth, min_confidence,
     response["slices"] = _trim_to_budget(slices, max_tokens)
     response["stats"]["nodes_visited"] = nodes_visited
     response["stats"]["edges_traversed"] = edges_traversed
-    response["stats"]["tokens_estimated"] = sum(_estimate_tokens(s["source"]) for s in response["slices"])
+    response["stats"]["tokens_estimated"] = sum(
+        _estimate_tokens(s["source"]) for s in response["slices"]
+    )
 
 
 def _shortest_path(
@@ -325,7 +393,9 @@ def _shortest_path(
     for _ in range(max_hops):
         next_frontier = []
         for nid in frontier:
-            for neighbor, edge_type, confidence in store.neighbors(nid, "out", min_confidence):
+            for neighbor, edge_type, confidence in store.neighbors(
+                nid, "out", min_confidence
+            ):
                 edges_traversed += 1
                 nb_id = neighbor["id"]
                 if nb_id in visited:
@@ -334,7 +404,11 @@ def _shortest_path(
                 nodes_visited += 1
                 came_from[nb_id] = (nid, edge_type, confidence)
                 if nb_id == to_id:
-                    return _reconstruct(came_from, from_id, to_id), nodes_visited, edges_traversed
+                    return (
+                        _reconstruct(came_from, from_id, to_id),
+                        nodes_visited,
+                        edges_traversed,
+                    )
                 next_frontier.append(nb_id)
         frontier = next_frontier
         if not frontier:
@@ -357,4 +431,4 @@ def _reconstruct(
     return path
 
 
-__all__ = ["explore", "BLIND_SPOTS", "db_path_for", "personalized_pagerank"]
+__all__ = ["BLIND_SPOTS", "db_path_for", "explore", "personalized_pagerank"]

@@ -10,7 +10,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_DIRS = {".git", ".venv", ".repoweaver", ".pytest_cache", ".ruff_cache"}
 TEXT_SUFFIXES = {
-    ".md", ".py", ".toml", ".yaml", ".yml", ".json", ".sql", ".txt", ".ini", ".cfg"
+    ".md",
+    ".py",
+    ".toml",
+    ".yaml",
+    ".yml",
+    ".json",
+    ".sql",
+    ".txt",
+    ".ini",
+    ".cfg",
 }
 
 # Strings are split so this scanner does not flag its own source.

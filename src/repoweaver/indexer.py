@@ -98,10 +98,26 @@ class Indexer:
             src_hash = hashlib.sha256(pf.source.encode("utf-8")).hexdigest()
             import_map = _build_import_map(pf, node_by_qname)
             edges_by_file[pf.file].extend(
-                _resolve_type_refs(pf, self.repo_root, node_by_qname, node_by_simple, node_kind_by_id, import_map, src_hash)
+                _resolve_type_refs(
+                    pf,
+                    self.repo_root,
+                    node_by_qname,
+                    node_by_simple,
+                    node_kind_by_id,
+                    import_map,
+                    src_hash,
+                )
             )
             edges_by_file[pf.file].extend(
-                _resolve_calls(pf, self.repo_root, node_by_qname, node_by_simple, node_kind_by_id, import_map, src_hash)
+                _resolve_calls(
+                    pf,
+                    self.repo_root,
+                    node_by_qname,
+                    node_by_simple,
+                    node_kind_by_id,
+                    import_map,
+                    src_hash,
+                )
             )
             edges_by_file[pf.file].extend(
                 _resolve_imports(pf, self.repo_root, node_by_qname, src_hash)
@@ -114,7 +130,9 @@ class Indexer:
         for pf in parsed_files:
             self.store.replace_file_nodes(pf.file, node_rows_by_file[pf.file])
         for pf in parsed_files:
-            self.store.replace_file_edges(pf.file, edges_by_file[pf.file], PARSER_VERSION)
+            self.store.replace_file_edges(
+                pf.file, edges_by_file[pf.file], PARSER_VERSION
+            )
         for pf in parsed_files:
             abs_path = self.repo_root / pf.file
             self.store.upsert_file_meta(
@@ -161,7 +179,9 @@ def _git_head(repo_root: Path) -> str:
     return head
 
 
-def _build_import_map(pf: ParsedFile, node_by_qname: dict[str, list[str]]) -> dict[str, str]:
+def _build_import_map(
+    pf: ParsedFile, node_by_qname: dict[str, list[str]]
+) -> dict[str, str]:
     """simple_name -> fully-qualified name, for imports that resolve to an indexed node."""
     out: dict[str, str] = {}
     for imp in pf.imports:
@@ -191,7 +211,11 @@ def _resolve_type_refs(
 
         target_qname = import_map.get(ref.supertype_simple_name)
         if target_qname and target_qname in node_by_qname:
-            to_candidates = [i for i in node_by_qname[target_qname] if node_kind_by_id[i] in _TYPE_KINDS]
+            to_candidates = [
+                i
+                for i in node_by_qname[target_qname]
+                if node_kind_by_id[i] in _TYPE_KINDS
+            ]
         else:
             to_candidates = [
                 nid
@@ -249,7 +273,8 @@ def _resolve_calls(
         from_id = from_candidates[0]
 
         pool = [
-            nid for nid in node_by_simple.get(call.method_simple_name, [])
+            nid
+            for nid in node_by_simple.get(call.method_simple_name, [])
             if node_kind_by_id[nid] in _CALLABLE_KINDS
         ]
         if not pool:
@@ -260,15 +285,23 @@ def _resolve_calls(
         if call.receiver_hint:
             target_qname = import_map.get(call.receiver_hint)
             if target_qname:
-                by_type = [nid for nid in pool if _owner_qname(nid).startswith(target_qname)]
+                by_type = [
+                    nid for nid in pool if _owner_qname(nid).startswith(target_qname)
+                ]
             else:
-                by_type = [nid for nid in pool if _owner_simple(nid) == call.receiver_hint]
+                by_type = [
+                    nid for nid in pool if _owner_simple(nid) == call.receiver_hint
+                ]
             if by_type:
                 narrowed = by_type
                 was_type_narrowed = True
 
         if len(narrowed) == 1:
-            confidence = _TYPE_NARROWED_CONFIDENCE if was_type_narrowed else _UNIQUE_UNTYPED_CONFIDENCE
+            confidence = (
+                _TYPE_NARROWED_CONFIDENCE
+                if was_type_narrowed
+                else _UNIQUE_UNTYPED_CONFIDENCE
+            )
             out.append(
                 EdgeRow(
                     from_id=from_id,

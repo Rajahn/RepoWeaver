@@ -49,7 +49,12 @@ if "status" in _extra_tools:
         with GraphStore(db_path) as store:
             indexer = Indexer(Path(repo).resolve(), store)
             fresh, stale = store.is_fresh(indexer.current_file_hashes())
-            return {"indexed": True, "fresh": fresh, "stale_files": stale, **store.stats()}
+            return {
+                "indexed": True,
+                "fresh": fresh,
+                "stale_files": stale,
+                **store.stats(),
+            }
 
 
 if "reindex" in _extra_tools:

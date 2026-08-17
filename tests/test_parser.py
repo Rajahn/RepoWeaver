@@ -42,7 +42,9 @@ def test_enum_extraction():
 def test_method_field_and_constructor_extraction():
     files = _parse_all()
     pf = files["com/example/demo/EnglishGreeter.java"]
-    method = next(n for n in pf.nodes if n.kind == "method" and n.simple_name == "greet")
+    method = next(
+        n for n in pf.nodes if n.kind == "method" and n.simple_name == "greet"
+    )
     assert method.qualified_name.startswith("com.example.demo.EnglishGreeter#greet(")
     ctor = next(n for n in pf.nodes if n.kind == "constructor")
     assert ctor.qualified_name == "com.example.demo.EnglishGreeter#<init>()"
@@ -76,4 +78,6 @@ def test_calls_extraction():
     app = files["com/example/demo/App.java"]
     call_names = {c.method_simple_name for c in app.calls}
     assert "greet" in call_names
-    assert "<init>" in call_names  # object_creation_expression for `new App(...)`/`new EnglishGreeter()`
+    assert (
+        "<init>" in call_names
+    )  # object_creation_expression for `new App(...)`/`new EnglishGreeter()`

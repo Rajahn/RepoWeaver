@@ -10,9 +10,9 @@ never has enough information to disambiguate a call target on its own.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator
 
 import tree_sitter_java
 from tree_sitter import Language, Node, Parser
@@ -75,7 +75,9 @@ class CallRef:
 
     caller_qualified_name: str
     method_simple_name: str
-    receiver_hint: str | None  # simple type name if resolvable from local decls, else None
+    receiver_hint: (
+        str | None
+    )  # simple type name if resolvable from local decls, else None
     line: int
 
 
@@ -156,8 +158,10 @@ class JavaParser:
         if name_node is None:
             return
         simple_name = _text(name_node, source)
-        qualified_name = f"{enclosing}.{simple_name}" if enclosing else (
-            f"{package}.{simple_name}" if package else simple_name
+        qualified_name = (
+            f"{enclosing}.{simple_name}"
+            if enclosing
+            else (f"{package}.{simple_name}" if package else simple_name)
         )
         kind = _KIND_BY_KEYWORD[node.type]
 
@@ -186,7 +190,9 @@ class JavaParser:
                     pf.type_refs.append(
                         TypeRef(
                             subtype_qualified_name=qualified_name,
-                            supertype_simple_name=_simple_type_name(_text(type_node, source)),
+                            supertype_simple_name=_simple_type_name(
+                                _text(type_node, source)
+                            ),
                             edge_type="EXTENDS",
                             line=super_node.start_point[0] + 1,
                         )
@@ -196,8 +202,12 @@ class JavaParser:
                     pf.type_refs.append(
                         TypeRef(
                             subtype_qualified_name=qualified_name,
-                            supertype_simple_name=_simple_type_name(_text(iface, source)),
-                            edge_type="IMPLEMENTS" if super_node.type == "super_interfaces" else "EXTENDS",
+                            supertype_simple_name=_simple_type_name(
+                                _text(iface, source)
+                            ),
+                            edge_type="IMPLEMENTS"
+                            if super_node.type == "super_interfaces"
+                            else "EXTENDS",
                             line=super_node.start_point[0] + 1,
                         )
                     )
@@ -214,13 +224,17 @@ class JavaParser:
             elif member.type == "method_declaration":
                 self._emit_method(member, source, pf, qualified_name, local_var_types)
             elif member.type == "constructor_declaration":
-                self._emit_constructor(member, source, pf, qualified_name, simple_name, local_var_types)
+                self._emit_constructor(
+                    member, source, pf, qualified_name, simple_name, local_var_types
+                )
             elif member.type == "field_declaration":
                 self._emit_fields(member, source, pf, qualified_name)
             elif member.type == "enum_body_declarations":
                 for m in member.children:
                     if m.type == "method_declaration":
-                        self._emit_method(m, source, pf, qualified_name, local_var_types)
+                        self._emit_method(
+                            m, source, pf, qualified_name, local_var_types
+                        )
             elif member.type == "enum_constant":
                 name_n = member.child_by_field_name("name")
                 if name_n is not None:
@@ -308,7 +322,9 @@ class JavaParser:
             method_scope.update(_collect_field_types(body, source))
             self._collect_calls(body, source, pf, qualified_name, method_scope)
 
-    def _emit_fields(self, node: Node, source: bytes, pf: ParsedFile, owner_qname: str) -> None:
+    def _emit_fields(
+        self, node: Node, source: bytes, pf: ParsedFile, owner_qname: str
+    ) -> None:
         type_node = node.child_by_field_name("type")
         type_text = _text(type_node, source) if type_node else ""
         for decl in node.children:
@@ -353,7 +369,9 @@ class JavaParser:
                     if object_node is not None:
                         obj_text = _text(object_node, source)
                         if object_node.type == "identifier":
-                            receiver_hint = scope_types.get(obj_text, _simple_type_name(obj_text))
+                            receiver_hint = scope_types.get(
+                                obj_text, _simple_type_name(obj_text)
+                            )
                         else:
                             receiver_hint = None
                     pf.calls.append(
@@ -381,7 +399,10 @@ class JavaParser:
         """Walk all ``*.java`` files under ``repo_root`` (skipping build output dirs)."""
         skip_dirs = {".git", "target", "build", "out", "node_modules", ".repoweaver"}
         for java_file in sorted(self.repo_root.rglob("*.java")):
-            if any(part in skip_dirs for part in java_file.relative_to(self.repo_root).parts):
+            if any(
+                part in skip_dirs
+                for part in java_file.relative_to(self.repo_root).parts
+            ):
                 continue
             yield self.parse_file(java_file)
 
@@ -447,7 +468,9 @@ def _formal_param_types(params_node: Node, source: bytes) -> dict[str, str]:
             type_node = p.child_by_field_name("type")
             name_node = p.child_by_field_name("name")
             if type_node is not None and name_node is not None:
-                out[_text(name_node, source)] = _simple_type_name(_text(type_node, source))
+                out[_text(name_node, source)] = _simple_type_name(
+                    _text(type_node, source)
+                )
     return out
 
 
