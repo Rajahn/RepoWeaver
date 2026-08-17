@@ -104,12 +104,15 @@ def count_parse_errors(repo_root: Path) -> int:
 def graph_signature(store: GraphStore) -> str:
     """Canonical content hash of the graph, excluding volatile fields
     (indexed_at/observed_at/commit_hash) so identical source always hashes
-    the same regardless of when or where it was indexed."""
+    the same regardless of when or where it was indexed. Includes
+    unresolved_reference rows so an incremental rebuild that differs only in
+    ambiguity bookkeeping is correctly detected as non-identical."""
     import hashlib
 
     nodes = store.conn.execute(
         """
-        SELECT id, kind, qualified_name, simple_name, file, span_start, span_end, signature
+        SELECT id, kind, qualified_name, simple_name, file, span_start, span_end,
+               signature, is_entry_point, entry_point_kind
         FROM node ORDER BY id
         """
     ).fetchall()
@@ -119,10 +122,17 @@ def graph_signature(store: GraphStore) -> str:
         FROM edge ORDER BY id
         """
     ).fetchall()
+    unresolved = store.conn.execute(
+        """
+        SELECT id, from_id, type, target_name, candidates, reason, site_count
+        FROM unresolved_reference ORDER BY id
+        """
+    ).fetchall()
     payload = json.dumps(
         {
             "nodes": [tuple(r) for r in nodes],
             "edges": [tuple(r) for r in edges],
+            "unresolved": [tuple(r) for r in unresolved],
         },
         sort_keys=True,
         default=str,
@@ -133,12 +143,16 @@ def graph_signature(store: GraphStore) -> str:
 def edge_counts(store: GraphStore) -> tuple[int, int, int]:
     """(edges_total, edges_resolved, edges_ambiguous).
 
-    resolved: confidence >= 0.5 AND ambiguous_candidates is empty.
-    ambiguous: ambiguous_candidates is non-empty (regardless of confidence —
-    a structural ambiguous edge can sit at exactly 0.5, and it must still
-    never count as resolved).
+    resolved: confidence >= 0.5 AND ambiguous_candidates is empty. The resolver
+    pipeline (resolver.py) never puts an ambiguous candidate set into the
+    `edge` table at all anymore — see UnresolvedReferenceRow — so this filter
+    is a defense-in-depth invariant, not something the normal path relies on.
+    ambiguous: sum of unresolved_reference candidate-list lengths. Each row
+    unions every equally-valid candidate for one (from_id, type, target_name)
+    call site, so summing lengths reproduces the exact same "one ambiguous
+    edge per candidate" counting convention M1 used when it stored these as
+    N separate `edge` rows — a pure storage relocation, not a metric change.
     """
-    (total,) = store.conn.execute("SELECT COUNT(*) FROM edge").fetchone()
     (resolved,) = store.conn.execute(
         """
         SELECT COUNT(*) FROM edge
@@ -146,10 +160,12 @@ def edge_counts(store: GraphStore) -> tuple[int, int, int]:
         """,
         (RESOLVED_MIN_CONFIDENCE,),
     ).fetchone()
-    (ambiguous,) = store.conn.execute(
-        "SELECT COUNT(*) FROM edge WHERE ambiguous_candidates != '[]'"
-    ).fetchone()
-    return int(total), int(resolved), int(ambiguous)
+    candidate_lists = store.conn.execute(
+        "SELECT candidates FROM unresolved_reference"
+    ).fetchall()
+    ambiguous = sum(len(json.loads(row["candidates"])) for row in candidate_lists)
+    total = int(resolved) + ambiguous
+    return total, int(resolved), ambiguous
 
 
 def cross_file_dependent_coverage(store: GraphStore) -> tuple[int, int]:

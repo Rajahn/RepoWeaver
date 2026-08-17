@@ -1,6 +1,7 @@
--- RepoWeaver graph schema (frozen v1 — see docs/schema.md and docs/adr/0001-*.md)
--- SQLite DDL for node, edge, evidence, and file_meta tables.
--- Applied automatically by GraphStore._apply_schema().
+-- RepoWeaver graph schema (v1 frozen core + v1.1 additive — see docs/schema.md
+-- and docs/adr/0001-*.md, docs/adr/0002-m2-resolution-and-freshness.md).
+-- SQLite DDL for node, edge, evidence, file_meta, unresolved_reference, and
+-- file_refs_cache tables. Applied automatically by GraphStore._apply_schema().
 
 PRAGMA foreign_keys = ON;
 
@@ -19,7 +20,10 @@ CREATE TABLE IF NOT EXISTS node (
     simple_name     TEXT    NOT NULL DEFAULT '',  -- unqualified symbol name
     signature       TEXT    NOT NULL DEFAULT '',  -- method signature or class header
     commit_hash     TEXT    NOT NULL DEFAULT '',  -- git HEAD at index time; '' if not a git repo
-    indexed_at      INTEGER NOT NULL DEFAULT 0    -- unix epoch seconds
+    indexed_at      INTEGER NOT NULL DEFAULT 0,   -- unix epoch seconds
+    -- v1.1 additive (M2): framework entry-point flag — never a self-loop edge.
+    is_entry_point    INTEGER NOT NULL DEFAULT 0,
+    entry_point_kind  TEXT    NOT NULL DEFAULT ''  -- '' | HTTP_CONTROLLER | HTTP_ROUTE | SCHEDULED | MESSAGE_LISTENER
 );
 
 CREATE INDEX IF NOT EXISTS idx_node_file   ON node (repo, file);
@@ -98,4 +102,39 @@ CREATE TABLE IF NOT EXISTS file_meta (
     content_hash   TEXT    NOT NULL DEFAULT '',  -- sha256 of file bytes at last index
     indexed_at     INTEGER NOT NULL DEFAULT 0,   -- unix epoch seconds
     node_count     INTEGER NOT NULL DEFAULT 0
+);
+
+-- ──────────────────────────────────────────────────────────────────────
+-- unresolved_reference — v1.1 additive (M2). A call/type reference that
+-- matched more than one equally-valid candidate. Never counted as a
+-- resolved edge; a resolved `edge` row always points at exactly one target.
+-- ──────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS unresolved_reference (
+    id            TEXT    PRIMARY KEY,   -- sha256(f"{from_id}|{type}|{target_name}")[:16]
+    from_id       TEXT    NOT NULL REFERENCES node(id) ON DELETE CASCADE,
+    type          TEXT    NOT NULL,      -- CALLS | EXTENDS | IMPLEMENTS
+    target_name   TEXT    NOT NULL DEFAULT '',  -- method/type simple name that was ambiguous
+    candidates    TEXT    NOT NULL DEFAULT '[]', -- JSON array of candidate node ids, length >= 2
+    reason        TEXT    NOT NULL DEFAULT '',  -- ambiguous_owner_chain | ambiguous_type | ambiguous_global_fallback | ambiguous_supertype
+    file          TEXT    NOT NULL DEFAULT '',  -- first-observed call/reference site
+    line          INTEGER NOT NULL DEFAULT 0,
+    site_count    INTEGER NOT NULL DEFAULT 1,   -- number of source sites merged into this row
+    observed_at   INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_unresolved_from ON unresolved_reference (from_id);
+CREATE INDEX IF NOT EXISTS idx_unresolved_type ON unresolved_reference (type);
+
+-- ──────────────────────────────────────────────────────────────────────
+-- file_refs_cache — v1.1 additive (M2). Internal build-performance cache of
+-- one file's raw (unresolved) parser output, keyed by content hash. Lets
+-- `fabric watch`/incremental build skip re-parsing unchanged files while
+-- still feeding them into every global re-resolution pass. Never read by
+-- `explore()` — purely an indexer implementation detail, not part of the
+-- response contract.
+-- ──────────────────────────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS file_refs_cache (
+    file          TEXT    PRIMARY KEY,
+    content_hash  TEXT    NOT NULL DEFAULT '',
+    payload       TEXT    NOT NULL DEFAULT ''   -- JSON-serialized raw ParsedFile
 );

@@ -1,31 +1,61 @@
-"""Repo-wide symbol resolution and orchestration for `fabric build`.
+"""Repo-wide symbol resolution and orchestration for `fabric build`/`fabric watch`.
 
 A single file's AST (see `repoweaver.parser.java`) never has enough information
 to resolve a call target, a superclass, or an import: that requires the whole
-repo's symbol table. This module builds that table, resolves every raw
-reference into an `EdgeRow` with provenance/confidence (never guessing past what
-the evidence supports — see docs/adr/0001-schema-and-explore-contract-v1.md #4),
-and persists everything through `GraphStore` in one transaction.
+repo's symbol table. `repoweaver.resolver` builds that table and resolves every
+raw reference into an `EdgeRow` (or, when ambiguous, an `UnresolvedReferenceRow`)
+with provenance/confidence — never guessing past what the evidence supports
+(docs/adr/0001-schema-and-explore-contract-v1.md #4,
+docs/adr/0002-m2-resolution-and-freshness.md). This module owns parsing
+(full or cached), calling the resolver, and persisting through `GraphStore`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from repoweaver.graph.store import EdgeRow, GraphStore, NodeRow
-from repoweaver.parser.java import PARSER_VERSION, JavaParser, ParsedFile
+from repoweaver.graph.store import EdgeRow, GraphStore, NodeRow, UnresolvedReferenceRow
+from repoweaver.parser.java import (
+    PARSER_VERSION,
+    CallRef,
+    ImportRef,
+    JavaParser,
+    NodeRecord,
+    ParsedFile,
+    TypeRef,
+)
+from repoweaver.resolver import (
+    SymbolTable,
+    build_file_context,
+    build_supertypes,
+    resolve_calls,
+    resolve_imports,
+    resolve_type_refs,
+)
 
-_TYPE_KINDS = {"class", "interface", "enum"}
-_CALLABLE_KINDS = {"method", "constructor"}
+_SKIP_DIRS = {".git", "target", "build", "out", "node_modules", ".repoweaver"}
 
-_AMBIGUOUS_CONFIDENCE = 0.35
-_UNIQUE_UNTYPED_CONFIDENCE = 0.70
-_TYPE_NARROWED_CONFIDENCE = 0.85
-_STRUCTURAL_CONFIDENCE = 1.00
-_STRUCTURAL_AMBIGUOUS_CONFIDENCE = 0.50
+# Fixed annotation -> entry-point-kind taxonomy (see docs/adr/0002-*.md).
+# Deliberately NOT modeled as a self-loop edge or a synthetic edge type —
+# an entry point is an attribute of the node itself.
+ENTRY_POINT_ANNOTATIONS: dict[str, str] = {
+    "RestController": "HTTP_CONTROLLER",
+    "Controller": "HTTP_CONTROLLER",
+    "RequestMapping": "HTTP_ROUTE",
+    "GetMapping": "HTTP_ROUTE",
+    "PostMapping": "HTTP_ROUTE",
+    "PutMapping": "HTTP_ROUTE",
+    "DeleteMapping": "HTTP_ROUTE",
+    "PatchMapping": "HTTP_ROUTE",
+    "Scheduled": "SCHEDULED",
+    "KafkaListener": "MESSAGE_LISTENER",
+    "JmsListener": "MESSAGE_LISTENER",
+    "RabbitListener": "MESSAGE_LISTENER",
+}
 
 
 def repo_slug(repo_root: Path) -> str:
@@ -41,37 +71,132 @@ def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _entry_point_kind(annotations: list[str]) -> str:
+    for name in annotations:
+        kind = ENTRY_POINT_ANNOTATIONS.get(name)
+        if kind:
+            return kind
+    return ""
+
+
 @dataclass
 class BuildStats:
     files: int
     nodes: int
     edges: int
     elapsed_seconds: float
+    unresolved: int = 0
+    changed_files: int = 0
+
+
+def _discover_files(repo_root: Path) -> set[str]:
+    out = set()
+    for java_file in repo_root.rglob("*.java"):
+        rel = java_file.relative_to(repo_root)
+        if any(part in _SKIP_DIRS for part in rel.parts):
+            continue
+        out.add(str(rel).replace("\\", "/"))
+    return out
+
+
+def _parsed_file_to_json(pf: ParsedFile) -> str:
+    return json.dumps(
+        {
+            "file": pf.file,
+            "package": pf.package,
+            "imports": [asdict(i) for i in pf.imports],
+            "nodes": [asdict(n) for n in pf.nodes],
+            "top_level_types": pf.top_level_types,
+            "type_refs": [asdict(t) for t in pf.type_refs],
+            "calls": [asdict(c) for c in pf.calls],
+            "source": pf.source,
+        }
+    )
+
+
+def _parsed_file_from_json(payload: str) -> ParsedFile:
+    d = json.loads(payload)
+    return ParsedFile(
+        file=d["file"],
+        package=d["package"],
+        imports=[ImportRef(**i) for i in d["imports"]],
+        nodes=[NodeRecord(**n) for n in d["nodes"]],
+        top_level_types=d["top_level_types"],
+        type_refs=[TypeRef(**t) for t in d["type_refs"]],
+        calls=[CallRef(**c) for c in d["calls"]],
+        source=d["source"],
+    )
 
 
 class Indexer:
-    """Parses every `*.java` file under `repo_root` and rebuilds the graph."""
+    """Parses `*.java` files under `repo_root` and (re)builds the graph.
+
+    `build()` always re-parses every file (used for `fabric build` and as the
+    determinism cross-check in the benchmark harness). `build_incremental()`
+    re-parses only the given changed files, reads cached raw references for
+    everything else, and re-runs resolution globally — so the result is
+    byte-for-byte identical to a full rebuild's `graph_signature()` (see
+    docs/adr/0002-m2-resolution-and-freshness.md).
+    """
 
     def __init__(self, repo_root: str | Path, store: GraphStore) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.store = store
 
     def build(self) -> BuildStats:
+        all_files = _discover_files(self.repo_root)
+        known = self.store.known_files()
+        deleted = known - all_files
+        return self._sync(changed=all_files, deleted=deleted)
+
+    def build_incremental(
+        self, changed: set[str], deleted: set[str] | None = None
+    ) -> BuildStats:
+        """`changed`/`deleted` are repo-relative paths (as produced by the file
+        watcher). Files outside both sets are read from `file_refs_cache`."""
+        return self._sync(changed=set(changed), deleted=set(deleted or set()))
+
+    def _sync(self, changed: set[str], deleted: set[str]) -> BuildStats:
         started = time.monotonic()
         parser = JavaParser(self.repo_root)
-        parsed_files: list[ParsedFile] = list(parser.walk_repo())
-
-        node_rows_by_file: dict[str, list[NodeRow]] = {}
-        node_by_qname: dict[str, list[str]] = {}
-        node_by_simple: dict[str, list[str]] = {}
-        node_kind_by_id: dict[str, str] = {}
         commit_hash = _git_head(self.repo_root)
         now = int(time.time())
 
+        for stale_file in deleted:
+            self.store.delete_file(stale_file)
+
+        all_files = (_discover_files(self.repo_root) | changed) - deleted
+        parsed_files: list[ParsedFile] = []
+        for rel in sorted(all_files):
+            if rel in changed:
+                pf = parser.parse_file(self.repo_root / rel)
+                content_hash = file_hash(self.repo_root / rel)
+                self.store.set_file_refs_cache(rel, content_hash, _parsed_file_to_json(pf))
+            else:
+                cached = self.store.get_file_refs_cache(rel)
+                content_hash = file_hash(self.repo_root / rel)
+                if cached is not None and cached[0] == content_hash:
+                    pf = _parsed_file_from_json(cached[1])
+                else:
+                    # Cache miss (first-ever incremental call, or drift) —
+                    # never guess stale data; re-parse to stay correct.
+                    pf = parser.parse_file(self.repo_root / rel)
+                    self.store.set_file_refs_cache(
+                        rel, content_hash, _parsed_file_to_json(pf)
+                    )
+            parsed_files.append(pf)
+
+        node_rows_by_file: dict[str, list[NodeRow]] = {}
+        all_node_rows: list[NodeRow] = []
         for pf in parsed_files:
             rows = []
             for rec in pf.nodes:
                 nid = node_id(rec.kind, self.repo_root, pf.file, rec.qualified_name)
+                is_entry, kind = (
+                    (True, _entry_point_kind(rec.annotations))
+                    if _entry_point_kind(rec.annotations)
+                    else (False, "")
+                )
                 row = NodeRow(
                     id=nid,
                     kind=rec.kind,
@@ -84,55 +209,49 @@ class Indexer:
                     repo=str(self.repo_root),
                     commit_hash=commit_hash,
                     indexed_at=now,
+                    is_entry_point=is_entry,
+                    entry_point_kind=kind,
                 )
                 rows.append(row)
-                node_by_qname.setdefault(rec.qualified_name, []).append(nid)
-                node_by_simple.setdefault(rec.simple_name, []).append(nid)
-                node_kind_by_id[nid] = rec.kind
             node_rows_by_file[pf.file] = rows
+            all_node_rows.extend(rows)
 
-        edges_by_file: dict[str, list[EdgeRow]] = {pf.file: [] for pf in parsed_files}
-        current_files = {pf.file for pf in parsed_files}
+        symtab = SymbolTable(all_node_rows)
 
+        type_edges_by_file: dict[str, list[EdgeRow]] = {}
+        type_unresolved_by_file: dict[str, list[UnresolvedReferenceRow]] = {}
+        file_ctx_by_file = {}
         for pf in parsed_files:
+            ctx = build_file_context(pf, symtab)
+            file_ctx_by_file[pf.file] = ctx
             src_hash = hashlib.sha256(pf.source.encode("utf-8")).hexdigest()
-            import_map = _build_import_map(pf, node_by_qname)
-            edges_by_file[pf.file].extend(
-                _resolve_type_refs(
-                    pf,
-                    self.repo_root,
-                    node_by_qname,
-                    node_by_simple,
-                    node_kind_by_id,
-                    import_map,
-                    src_hash,
-                )
-            )
-            edges_by_file[pf.file].extend(
-                _resolve_calls(
-                    pf,
-                    self.repo_root,
-                    node_by_qname,
-                    node_by_simple,
-                    node_kind_by_id,
-                    import_map,
-                    src_hash,
-                )
-            )
-            edges_by_file[pf.file].extend(
-                _resolve_imports(pf, self.repo_root, node_by_qname, src_hash)
-            )
+            edges, unresolved = resolve_type_refs(pf, ctx, symtab, src_hash)
+            type_edges_by_file[pf.file] = edges
+            type_unresolved_by_file[pf.file] = unresolved
 
-        known = self.store.known_files()
-        for stale_file in known - current_files:
-            self.store.delete_file(stale_file)
+        build_supertypes(type_edges_by_file, symtab)
+
+        edges_by_file: dict[str, list[EdgeRow]] = {}
+        unresolved_by_file: dict[str, list[UnresolvedReferenceRow]] = {}
+        for pf in parsed_files:
+            ctx = file_ctx_by_file[pf.file]
+            src_hash = hashlib.sha256(pf.source.encode("utf-8")).hexdigest()
+            call_edges, call_unresolved = resolve_calls(pf, ctx, symtab, src_hash)
+            import_edges = resolve_imports(pf, symtab, src_hash)
+
+            edges_by_file[pf.file] = (
+                type_edges_by_file[pf.file] + call_edges + import_edges
+            )
+            unresolved_by_file[pf.file] = (
+                type_unresolved_by_file[pf.file] + call_unresolved
+            )
 
         for pf in parsed_files:
             self.store.replace_file_nodes(pf.file, node_rows_by_file[pf.file])
         for pf in parsed_files:
-            self.store.replace_file_edges(
-                pf.file, edges_by_file[pf.file], PARSER_VERSION
-            )
+            self.store.replace_file_edges(pf.file, edges_by_file[pf.file], PARSER_VERSION)
+        for pf in parsed_files:
+            self.store.replace_file_unresolved(pf.file, unresolved_by_file[pf.file])
         for pf in parsed_files:
             abs_path = self.repo_root / pf.file
             self.store.upsert_file_meta(
@@ -146,18 +265,14 @@ class Indexer:
             nodes=sum(len(v) for v in node_rows_by_file.values()),
             edges=sum(len(v) for v in edges_by_file.values()),
             elapsed_seconds=elapsed,
+            unresolved=sum(len(v) for v in unresolved_by_file.values()),
+            changed_files=len(changed),
         )
 
     def current_file_hashes(self) -> dict[str, str]:
-        parser = JavaParser(self.repo_root)
-        skip_dirs = {".git", "target", "build", "out", "node_modules", ".repoweaver"}
         out = {}
-        for java_file in sorted(self.repo_root.rglob("*.java")):
-            rel = java_file.relative_to(self.repo_root)
-            if any(part in skip_dirs for part in rel.parts):
-                continue
-            out[str(rel).replace("\\", "/")] = file_hash(java_file)
-        del parser
+        for rel in sorted(_discover_files(self.repo_root)):
+            out[rel] = file_hash(self.repo_root / rel)
         return out
 
 
@@ -179,197 +294,11 @@ def _git_head(repo_root: Path) -> str:
     return head
 
 
-def _build_import_map(
-    pf: ParsedFile, node_by_qname: dict[str, list[str]]
-) -> dict[str, str]:
-    """simple_name -> fully-qualified name, for imports that resolve to an indexed node."""
-    out: dict[str, str] = {}
-    for imp in pf.imports:
-        if imp.is_wildcard or imp.is_static:
-            continue
-        if imp.imported_name in node_by_qname:
-            simple = imp.imported_name.rsplit(".", 1)[-1]
-            out[simple] = imp.imported_name
-    return out
-
-
-def _resolve_type_refs(
-    pf: ParsedFile,
-    repo_root: Path,
-    node_by_qname: dict[str, list[str]],
-    node_by_simple: dict[str, list[str]],
-    node_kind_by_id: dict[str, str],
-    import_map: dict[str, str],
-    src_hash: str,
-) -> list[EdgeRow]:
-    out: list[EdgeRow] = []
-    for ref in pf.type_refs:
-        from_candidates = node_by_qname.get(ref.subtype_qualified_name, [])
-        if not from_candidates:
-            continue
-        from_id = from_candidates[0]
-
-        target_qname = import_map.get(ref.supertype_simple_name)
-        if target_qname and target_qname in node_by_qname:
-            to_candidates = [
-                i
-                for i in node_by_qname[target_qname]
-                if node_kind_by_id[i] in _TYPE_KINDS
-            ]
-        else:
-            to_candidates = [
-                nid
-                for nid in node_by_simple.get(ref.supertype_simple_name, [])
-                if node_kind_by_id[nid] in _TYPE_KINDS
-            ]
-
-        if not to_candidates:
-            continue  # external/JDK supertype, not in index — expected, not an error
-        if len(to_candidates) == 1:
-            out.append(
-                EdgeRow(
-                    from_id=from_id,
-                    to_id=to_candidates[0],
-                    type=ref.edge_type,
-                    provenance="tree_sitter_java",
-                    confidence=_STRUCTURAL_CONFIDENCE,
-                    file=pf.file,
-                    line=ref.line,
-                    source_hash=src_hash,
-                )
-            )
-        else:
-            for cand in to_candidates:
-                out.append(
-                    EdgeRow(
-                        from_id=from_id,
-                        to_id=cand,
-                        type=ref.edge_type,
-                        provenance="tree_sitter_java",
-                        confidence=_STRUCTURAL_AMBIGUOUS_CONFIDENCE,
-                        file=pf.file,
-                        line=ref.line,
-                        source_hash=src_hash,
-                        ambiguous_candidates=sorted(to_candidates),
-                    )
-                )
-    return out
-
-
-def _resolve_calls(
-    pf: ParsedFile,
-    repo_root: Path,
-    node_by_qname: dict[str, list[str]],
-    node_by_simple: dict[str, list[str]],
-    node_kind_by_id: dict[str, str],
-    import_map: dict[str, str],
-    src_hash: str,
-) -> list[EdgeRow]:
-    out: list[EdgeRow] = []
-    for call in pf.calls:
-        from_candidates = node_by_qname.get(call.caller_qualified_name, [])
-        if not from_candidates:
-            continue
-        from_id = from_candidates[0]
-
-        pool = [
-            nid
-            for nid in node_by_simple.get(call.method_simple_name, [])
-            if node_kind_by_id[nid] in _CALLABLE_KINDS
-        ]
-        if not pool:
-            continue  # JDK/external call — not in index, expected
-
-        narrowed = pool
-        was_type_narrowed = False
-        if call.receiver_hint:
-            target_qname = import_map.get(call.receiver_hint)
-            if target_qname:
-                by_type = [
-                    nid for nid in pool if _owner_qname(nid).startswith(target_qname)
-                ]
-            else:
-                by_type = [
-                    nid for nid in pool if _owner_simple(nid) == call.receiver_hint
-                ]
-            if by_type:
-                narrowed = by_type
-                was_type_narrowed = True
-
-        if len(narrowed) == 1:
-            confidence = (
-                _TYPE_NARROWED_CONFIDENCE
-                if was_type_narrowed
-                else _UNIQUE_UNTYPED_CONFIDENCE
-            )
-            out.append(
-                EdgeRow(
-                    from_id=from_id,
-                    to_id=narrowed[0],
-                    type="CALLS",
-                    provenance="tree_sitter_java",
-                    confidence=confidence,
-                    file=pf.file,
-                    line=call.line,
-                    source_hash=src_hash,
-                )
-            )
-        else:
-            for cand in narrowed:
-                out.append(
-                    EdgeRow(
-                        from_id=from_id,
-                        to_id=cand,
-                        type="CALLS",
-                        provenance="tree_sitter_java",
-                        confidence=_AMBIGUOUS_CONFIDENCE,
-                        file=pf.file,
-                        line=call.line,
-                        source_hash=src_hash,
-                        ambiguous_candidates=sorted(narrowed),
-                    )
-                )
-    return out
-
-
-def _resolve_imports(
-    pf: ParsedFile,
-    repo_root: Path,
-    node_by_qname: dict[str, list[str]],
-    src_hash: str,
-) -> list[EdgeRow]:
-    out: list[EdgeRow] = []
-    for imp in pf.imports:
-        if imp.is_wildcard or imp.is_static:
-            continue  # wildcard/static imports can't be resolved without per-usage analysis (M1 blind spot)
-        to_candidates = node_by_qname.get(imp.imported_name, [])
-        if not to_candidates:
-            continue
-        for top_level_qname in pf.top_level_types:
-            from_candidates = node_by_qname.get(top_level_qname, [])
-            if not from_candidates:
-                continue
-            out.append(
-                EdgeRow(
-                    from_id=from_candidates[0],
-                    to_id=to_candidates[0],
-                    type="IMPORTS",
-                    provenance="tree_sitter_java",
-                    confidence=_STRUCTURAL_CONFIDENCE,
-                    file=pf.file,
-                    line=imp.line,
-                    source_hash=src_hash,
-                )
-            )
-    return out
-
-
-def _owner_qname(node_id_str: str) -> str:
-    """Extract the qualified_name portion of a node id and strip any member suffix."""
-    qname = node_id_str.split(":", 3)[-1]
-    return qname.split("#", 1)[0]
-
-
-def _owner_simple(node_id_str: str) -> str:
-    owner = _owner_qname(node_id_str)
-    return owner.rsplit(".", 1)[-1]
+__all__ = [
+    "ENTRY_POINT_ANNOTATIONS",
+    "BuildStats",
+    "Indexer",
+    "file_hash",
+    "node_id",
+    "repo_slug",
+]

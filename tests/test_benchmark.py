@@ -17,7 +17,7 @@ from repoweaver.benchmark.metrics import (
 )
 from repoweaver.benchmark.report import render_report
 from repoweaver.benchmark.runner import run_benchmark
-from repoweaver.graph.store import EdgeRow, GraphStore, NodeRow
+from repoweaver.graph.store import EdgeRow, GraphStore, NodeRow, UnresolvedReferenceRow
 from repoweaver.indexer import Indexer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,10 +58,10 @@ class TestEdgeCounts:
         assert (total, resolved, ambiguous) == (9, 7, 2)
 
     def test_ambiguous_edge_excluded_from_resolved_even_at_boundary_confidence(self):
-        """A structural-ambiguous edge sits at exactly confidence=0.5 — the
-        resolved-edge boundary. It must still be excluded because it has
-        ambiguous_candidates, proving "confidence>=0.5" alone is not the
-        resolved definition."""
+        """An ambiguous reference (2 equally-valid candidates) is stored in
+        unresolved_reference, never in `edge` — so it must contribute 0 to
+        `resolved` and exactly len(candidates) to `ambiguous`, proving the
+        candidate set (not just a confidence threshold) drives the count."""
         store = GraphStore(":memory:").open()
         try:
             store.replace_file_nodes(
@@ -96,25 +96,23 @@ class TestEdgeCounts:
                     ),
                 ],
             )
-            store.replace_file_edges(
+            store.replace_file_unresolved(
                 "A.java",
                 [
-                    EdgeRow(
+                    UnresolvedReferenceRow(
                         from_id="n1",
-                        to_id="n2",
                         type="EXTENDS",
-                        provenance="test",
-                        confidence=0.5,
+                        target_name="B",
+                        candidates=["n2", "n3"],
+                        reason="ambiguous_supertype",
                         file="A.java",
                         line=1,
-                        ambiguous_candidates=["n2", "n3"],
                     )
                 ],
-                "test-1",
             )
             store.commit()
             total, resolved, ambiguous = edge_counts(store)
-            assert (total, resolved, ambiguous) == (1, 0, 1)
+            assert (total, resolved, ambiguous) == (2, 0, 2)
         finally:
             store.close()
 

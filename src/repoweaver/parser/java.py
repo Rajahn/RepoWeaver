@@ -49,6 +49,7 @@ class NodeRecord:
     simple_name: str = ""
     signature: str = ""
     commit_hash: str = ""
+    annotations: list[str] = field(default_factory=list)  # simple names, e.g. "GetMapping"
 
 
 @dataclass
@@ -74,11 +75,20 @@ class CallRef:
     """A raw method-invocation reference, not yet resolved."""
 
     caller_qualified_name: str
+    owner_qname: str  # qualified name of the type enclosing this call site
     method_simple_name: str
     receiver_hint: (
         str | None
     )  # simple type name if resolvable from local decls, else None
+    receiver_kind: str  # unqualified | this | super | type | variable | chain
+    argument_count: int
     line: int
+    # Per-argument best-effort static type (simple name), "null" for the null
+    # literal, or "unknown" when it cannot be determined from single-file
+    # information alone. Never a guess: "unknown"/"null" are neutral signals
+    # for the resolver's overload scoring, not positive evidence for any
+    # candidate — see resolver._param_compat.
+    argument_type_hints: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -178,6 +188,7 @@ class JavaParser:
                 qualified_name=qualified_name,
                 simple_name=simple_name,
                 signature=signature,
+                annotations=_extract_annotations(node, source),
             )
         )
         if enclosing is None:
@@ -232,8 +243,10 @@ class JavaParser:
             elif member.type == "enum_body_declarations":
                 for m in member.children:
                     if m.type == "method_declaration":
-                        self._emit_method(
-                            m, source, pf, qualified_name, local_var_types
+                        self._emit_method(m, source, pf, qualified_name, local_var_types)
+                    elif m.type == "constructor_declaration":
+                        self._emit_constructor(
+                            m, source, pf, qualified_name, simple_name, local_var_types
                         )
             elif member.type == "enum_constant":
                 name_n = member.child_by_field_name("name")
@@ -278,6 +291,7 @@ class JavaParser:
                 qualified_name=qualified_name,
                 simple_name=simple_name,
                 signature=f"{return_type} {simple_name}({', '.join(param_types)})",
+                annotations=_extract_annotations(node, source),
             )
         )
 
@@ -287,7 +301,7 @@ class JavaParser:
         body = node.child_by_field_name("body")
         if body is not None:
             method_scope.update(_collect_field_types(body, source))
-            self._collect_calls(body, source, pf, qualified_name, method_scope)
+            self._collect_calls(body, source, pf, qualified_name, owner_qname, method_scope)
 
     def _emit_constructor(
         self,
@@ -320,7 +334,7 @@ class JavaParser:
         body = node.child_by_field_name("body")
         if body is not None:
             method_scope.update(_collect_field_types(body, source))
-            self._collect_calls(body, source, pf, qualified_name, method_scope)
+            self._collect_calls(body, source, pf, qualified_name, owner_qname, method_scope)
 
     def _emit_fields(
         self, node: Node, source: bytes, pf: ParsedFile, owner_qname: str
@@ -352,11 +366,13 @@ class JavaParser:
         source: bytes,
         pf: ParsedFile,
         caller_qname: str,
+        owner_qname: str,
         scope_types: dict[str, str],
     ) -> None:
         # Refresh scope with any local variable declarations inside this block.
         scope_types = dict(scope_types)
         scope_types.update(_collect_field_types(node, source))
+        owner_simple_name = owner_qname.rsplit(".", 1)[-1]
 
         for child in node.children:
             if child.type in _TYPE_DECL_TYPES:
@@ -365,35 +381,43 @@ class JavaParser:
                 name_node = child.child_by_field_name("name")
                 object_node = child.child_by_field_name("object")
                 if name_node is not None:
-                    receiver_hint = None
-                    if object_node is not None:
-                        obj_text = _text(object_node, source)
-                        if object_node.type == "identifier":
-                            receiver_hint = scope_types.get(
-                                obj_text, _simple_type_name(obj_text)
-                            )
-                        else:
-                            receiver_hint = None
+                    receiver_kind, receiver_hint = _classify_receiver(
+                        object_node, source, scope_types
+                    )
+                    args_node = child.child_by_field_name("arguments")
                     pf.calls.append(
                         CallRef(
                             caller_qualified_name=caller_qname,
+                            owner_qname=owner_qname,
                             method_simple_name=_text(name_node, source),
                             receiver_hint=receiver_hint,
+                            receiver_kind=receiver_kind,
+                            argument_count=_count_arguments(args_node),
                             line=child.start_point[0] + 1,
+                            argument_type_hints=_infer_argument_types(
+                                args_node, source, scope_types, owner_simple_name
+                            ),
                         )
                     )
             elif child.type == "object_creation_expression":
                 type_node = child.child_by_field_name("type")
                 if type_node is not None:
+                    args_node = child.child_by_field_name("arguments")
                     pf.calls.append(
                         CallRef(
                             caller_qualified_name=caller_qname,
+                            owner_qname=owner_qname,
                             method_simple_name="<init>",
                             receiver_hint=_simple_type_name(_text(type_node, source)),
+                            receiver_kind="type",
+                            argument_count=_count_arguments(args_node),
                             line=child.start_point[0] + 1,
+                            argument_type_hints=_infer_argument_types(
+                                args_node, source, scope_types, owner_simple_name
+                            ),
                         )
                     )
-            self._collect_calls(child, source, pf, caller_qname, scope_types)
+            self._collect_calls(child, source, pf, caller_qname, owner_qname, scope_types)
 
     def walk_repo(self) -> Iterator[ParsedFile]:
         """Walk all ``*.java`` files under ``repo_root`` (skipping build output dirs)."""
@@ -489,6 +513,135 @@ def _collect_field_types(node: Node, source: bytes) -> dict[str, str]:
                     if name_node is not None:
                         out[_text(name_node, source)] = type_name
     return out
+
+
+def _extract_annotations(decl_node: Node, source: bytes) -> list[str]:
+    """Simple names of annotations on a type/method declaration, e.g.
+    `@org.foo.GetMapping("/x")` -> "GetMapping". Used only for entry-point
+    detection; never for call resolution."""
+    names: list[str] = []
+    modifiers = _first_of_type(decl_node, {"modifiers"})
+    if modifiers is None:
+        return names
+    for child in modifiers.children:
+        if child.type not in ("marker_annotation", "annotation"):
+            continue
+        name_node = child.child_by_field_name("name")
+        if name_node is None:
+            continue
+        names.append(_simple_type_name(_text(name_node, source)))
+    return names
+
+
+def _count_arguments(args_node: Node | None) -> int:
+    if args_node is None:
+        return 0
+    return sum(1 for c in args_node.children if c.is_named)
+
+
+_INTEGER_LITERAL_TYPES = {
+    "decimal_integer_literal",
+    "hex_integer_literal",
+    "octal_integer_literal",
+    "binary_integer_literal",
+}
+_FLOATING_LITERAL_TYPES = {"decimal_floating_point_literal", "hex_floating_point_literal"}
+
+
+def _literal_argument_type(node: Node, source: bytes) -> str | None:
+    if node.type == "string_literal":
+        return "String"
+    if node.type == "character_literal":
+        return "char"
+    if node.type in ("true", "false"):
+        return "boolean"
+    if node.type == "null_literal":
+        return "null"
+    if node.type in _INTEGER_LITERAL_TYPES:
+        return "long" if _text(node, source)[-1:] in ("l", "L") else "int"
+    if node.type in _FLOATING_LITERAL_TYPES:
+        return "float" if _text(node, source)[-1:] in ("f", "F") else "double"
+    return None
+
+
+def _infer_argument_type(
+    node: Node, source: bytes, scope_types: dict[str, str], owner_simple_name: str
+) -> str:
+    """Best-effort static type of one argument expression: a simple type
+    name, "null" for the null literal, or "unknown" when it cannot be safely
+    determined from single-file information alone. "unknown" is always the
+    honest fallback, never a guess — the resolver treats it as neutral."""
+    literal = _literal_argument_type(node, source)
+    if literal is not None:
+        return literal
+    if node.type == "identifier":
+        return scope_types.get(_text(node, source), "unknown")
+    if node.type == "this":
+        return owner_simple_name
+    if node.type in ("cast_expression", "object_creation_expression", "array_creation_expression"):
+        type_node = node.child_by_field_name("type")
+        return _simple_type_name(_text(type_node, source)) if type_node is not None else "unknown"
+    if node.type == "class_literal":
+        # `Foo.class`'s static type is always exactly java.lang.Class — never
+        # its (JDK, unindexed) generic argument, and never java.lang.reflect.Type.
+        return "Class"
+    if node.type == "field_access":
+        fa_object = node.child_by_field_name("object")
+        fa_field = node.child_by_field_name("field")
+        if fa_object is not None and fa_object.type == "this" and fa_field is not None:
+            return scope_types.get(_text(fa_field, source), "unknown")
+        return "unknown"
+    if node.type == "method_invocation":
+        # Return-type resolution needs the repo-wide symbol table, which is
+        # not available during single-file parsing — always "unknown" here
+        # rather than guess, matching the resolver's own no-guessing rule.
+        return "unknown"
+    return "unknown"
+
+
+def _infer_argument_types(
+    args_node: Node | None,
+    source: bytes,
+    scope_types: dict[str, str],
+    owner_simple_name: str,
+) -> list[str]:
+    if args_node is None:
+        return []
+    return [
+        _infer_argument_type(c, source, scope_types, owner_simple_name)
+        for c in args_node.children
+        if c.is_named
+    ]
+
+
+def _classify_receiver(
+    object_node: Node | None, source: bytes, scope_types: dict[str, str]
+) -> tuple[str, str | None]:
+    """Returns (receiver_kind, receiver_hint) for a method_invocation's
+    `object` field. `receiver_hint` is a simple type name for "variable"/
+    "type" kinds, else None — never guessed for multi-hop chains."""
+    if object_node is None:
+        return "unqualified", None
+    if object_node.type == "this":
+        return "this", None
+    if object_node.type == "super":
+        return "super", None
+    if object_node.type == "identifier":
+        obj_text = _text(object_node, source)
+        declared = scope_types.get(obj_text)
+        if declared is not None:
+            return "variable", declared
+        return "type", _simple_type_name(obj_text)
+    if object_node.type == "field_access":
+        fa_object = object_node.child_by_field_name("object")
+        fa_field = object_node.child_by_field_name("field")
+        if fa_object is not None and fa_object.type == "this" and fa_field is not None:
+            field_name = _text(fa_field, source)
+            declared = scope_types.get(field_name)
+            if declared is not None:
+                return "variable", declared
+        return "chain", None
+    return "chain", None
 
 
 def _type_signature(node: Node, source: bytes, kind: str, simple_name: str) -> str:

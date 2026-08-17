@@ -5,6 +5,7 @@ and query top-k recall/MRR against a hand-authored, machine-verifiable
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -99,11 +100,27 @@ def evaluate_edges(gt: GroundTruth, store: GraphStore) -> dict:
     predicted_resolved = {
         (r["from_id"], r["to_id"], r["type"]) for r in in_scope if _is_resolved_edge(r)
     }
-    predicted_ambiguous = {
-        (r["from_id"], r["to_id"], r["type"])
-        for r in in_scope
-        if r["ambiguous_candidates"] != "[]"
-    }
+
+    # Ambiguous candidates never reach the `edge` table (see resolver.py /
+    # UnresolvedReferenceRow) — they live in unresolved_reference as one row
+    # per (from_id, type, target_name) with a unioned candidate list. A
+    # (from, to, type) ground-truth triple counts as "correctly flagged
+    # ambiguous" if `to` is one of that row's candidates.
+    unresolved_rows = store.conn.execute(
+        """
+        SELECT ur.from_id, ur.type, ur.candidates, from_node.qualified_name AS from_qname
+        FROM unresolved_reference AS ur
+        JOIN node AS from_node ON from_node.id = ur.from_id
+        """
+    ).fetchall()
+    predicted_ambiguous: set[tuple[str, str, str]] = set()
+    for r in unresolved_rows:
+        if r["from_qname"] not in scope_files:
+            continue
+        for candidate_id in json.loads(r["candidates"]):
+            candidate_node = store.get_node(candidate_id)
+            if candidate_node and candidate_node["qualified_name"] in scope_files:
+                predicted_ambiguous.add((r["from_id"], candidate_id, r["type"]))
 
     true_positives = expected_resolvable & predicted_resolved
     precision = (

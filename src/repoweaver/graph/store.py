@@ -28,6 +28,11 @@ def evidence_id(edge_id_: str, file: str, line: int) -> str:
     return digest.hexdigest()[:16]
 
 
+def unresolved_reference_id(from_id: str, ref_type: str, target_name: str) -> str:
+    digest = hashlib.sha256(f"{from_id}|{ref_type}|{target_name}".encode())
+    return digest.hexdigest()[:16]
+
+
 @dataclass
 class NodeRow:
     """A fully-formed row for the `node` table."""
@@ -44,6 +49,8 @@ class NodeRow:
     language: str = "java"
     commit_hash: str = ""
     indexed_at: int = 0
+    is_entry_point: bool = False
+    entry_point_kind: str = ""
 
 
 @dataclass
@@ -52,6 +59,8 @@ class EdgeRow:
 
     Multiple EdgeRow instances with the same (from_id, to_id, type) collapse
     into one `edge` row with multiple `evidence` rows — see GraphStore.replace_file.
+    A resolved edge always points at exactly one target; ambiguous candidate
+    sets are never stored here — see UnresolvedReferenceRow.
     """
 
     from_id: str
@@ -63,6 +72,20 @@ class EdgeRow:
     line: int
     source_hash: str = ""
     ambiguous_candidates: list[str] = field(default_factory=list)
+
+
+@dataclass
+class UnresolvedReferenceRow:
+    """A call/type reference that matched more than one equally-valid
+    candidate — never counted as resolved coverage. See resolver.py."""
+
+    from_id: str
+    type: str
+    target_name: str
+    candidates: list[str]
+    reason: str
+    file: str
+    line: int
 
 
 class GraphStore:
@@ -106,6 +129,21 @@ class GraphStore:
     def _apply_schema(self) -> None:
         ddl = _SCHEMA_PATH.read_text(encoding="utf-8")
         self.conn.executescript(ddl)
+        self._migrate_additive_columns()
+
+    def _migrate_additive_columns(self) -> None:
+        """v1.1 additive columns on `node` — `CREATE TABLE IF NOT EXISTS` is a
+        no-op against a pre-existing v1 database, so a real ALTER is needed
+        for graphs built by an older RepoWeaver version."""
+        existing = {row[1] for row in self.conn.execute("PRAGMA table_info(node)")}
+        if "is_entry_point" not in existing:
+            self.conn.execute(
+                "ALTER TABLE node ADD COLUMN is_entry_point INTEGER NOT NULL DEFAULT 0"
+            )
+        if "entry_point_kind" not in existing:
+            self.conn.execute(
+                "ALTER TABLE node ADD COLUMN entry_point_kind TEXT NOT NULL DEFAULT ''"
+            )
 
     # ------------------------------------------------------------------
     # Replace-by-file (see ADR-0001 #3)
@@ -116,9 +154,11 @@ class GraphStore:
         return {row["file"] for row in rows}
 
     def delete_file(self, file: str) -> None:
-        """Remove a file entirely: its nodes (cascades edges+evidence) and file_meta row."""
+        """Remove a file entirely: its nodes (cascades edges+evidence+unresolved
+        references), its file_meta row, and its raw-refs cache entry."""
         self.conn.execute("DELETE FROM node WHERE file = ?", (file,))
         self.conn.execute("DELETE FROM file_meta WHERE file = ?", (file,))
+        self.conn.execute("DELETE FROM file_refs_cache WHERE file = ?", (file,))
 
     def replace_file_nodes(self, file: str, nodes: list[NodeRow]) -> None:
         """Replace the node set for one file without cascading edges owned by other files.
@@ -144,14 +184,16 @@ class GraphStore:
                 """
                 INSERT INTO node (
                     id, kind, language, repo, file, span_start, span_end,
-                    qualified_name, simple_name, signature, commit_hash, indexed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    qualified_name, simple_name, signature, commit_hash, indexed_at,
+                    is_entry_point, entry_point_kind
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(id) DO UPDATE SET
                     kind=excluded.kind, language=excluded.language, repo=excluded.repo,
                     file=excluded.file, span_start=excluded.span_start, span_end=excluded.span_end,
                     qualified_name=excluded.qualified_name, simple_name=excluded.simple_name,
                     signature=excluded.signature, commit_hash=excluded.commit_hash,
-                    indexed_at=excluded.indexed_at
+                    indexed_at=excluded.indexed_at, is_entry_point=excluded.is_entry_point,
+                    entry_point_kind=excluded.entry_point_kind
                 """,
                 (
                     n.id,
@@ -166,6 +208,8 @@ class GraphStore:
                     n.signature,
                     n.commit_hash,
                     n.indexed_at,
+                    int(n.is_entry_point),
+                    n.entry_point_kind,
                 ),
             )
 
@@ -240,6 +284,86 @@ class GraphStore:
                     ),
                 )
 
+    def replace_file_unresolved(
+        self, file: str, refs: list[UnresolvedReferenceRow]
+    ) -> None:
+        """Replace every unresolved reference *originating from* `file`.
+        Mirrors replace_file_edges: rows sharing (from_id, type, target_name)
+        merge into one row with a unioned candidate set and a site_count."""
+        from_ids = {
+            row["id"]
+            for row in self.conn.execute("SELECT id FROM node WHERE file = ?", (file,))
+        }
+        if from_ids:
+            placeholders = ",".join("?" * len(from_ids))
+            self.conn.execute(
+                f"DELETE FROM unresolved_reference WHERE from_id IN ({placeholders})",
+                tuple(from_ids),
+            )
+
+        merged: dict[str, UnresolvedReferenceRow] = {}
+        candidates_by_id: dict[str, set[str]] = {}
+        sites_by_id: dict[str, set[tuple[str, int]]] = {}
+        for r in refs:
+            rid = unresolved_reference_id(r.from_id, r.type, r.target_name)
+            candidates_by_id.setdefault(rid, set()).update(r.candidates)
+            sites_by_id.setdefault(rid, set()).add((r.file, r.line))
+            merged[rid] = r
+
+        now = int(time.time())
+        for rid, r in merged.items():
+            candidates = sorted(candidates_by_id[rid])
+            sites = sorted(sites_by_id[rid])
+            first_file, first_line = sites[0]
+            self.conn.execute(
+                """
+                INSERT INTO unresolved_reference
+                    (id, from_id, type, target_name, candidates, reason,
+                     file, line, site_count, observed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    candidates=excluded.candidates, reason=excluded.reason,
+                    file=excluded.file, line=excluded.line,
+                    site_count=excluded.site_count, observed_at=excluded.observed_at
+                """,
+                (
+                    rid,
+                    r.from_id,
+                    r.type,
+                    r.target_name,
+                    json.dumps(candidates),
+                    r.reason,
+                    first_file,
+                    first_line,
+                    len(sites),
+                    now,
+                ),
+            )
+
+    def unresolved_count(self) -> int:
+        (count,) = self.conn.execute(
+            "SELECT COUNT(*) FROM unresolved_reference"
+        ).fetchone()
+        return int(count)
+
+    def get_file_refs_cache(self, file: str) -> tuple[str, str] | None:
+        """Returns (content_hash, payload_json) if a cache entry exists."""
+        row = self.conn.execute(
+            "SELECT content_hash, payload FROM file_refs_cache WHERE file = ?", (file,)
+        ).fetchone()
+        return (row["content_hash"], row["payload"]) if row else None
+
+    def set_file_refs_cache(self, file: str, content_hash: str, payload: str) -> None:
+        self.conn.execute(
+            """
+            INSERT INTO file_refs_cache (file, content_hash, payload)
+            VALUES (?, ?, ?)
+            ON CONFLICT(file) DO UPDATE SET
+                content_hash=excluded.content_hash, payload=excluded.payload
+            """,
+            (file, content_hash, payload),
+        )
+
     def upsert_file_meta(self, file: str, content_hash: str, node_count: int) -> None:
         self.conn.execute(
             """
@@ -274,12 +398,23 @@ class GraphStore:
         edge_types = self.conn.execute(
             "SELECT type, COUNT(*) AS n FROM edge GROUP BY type"
         ).fetchall()
+        (entry_points,) = self.conn.execute(
+            "SELECT COUNT(*) FROM node WHERE is_entry_point = 1"
+        ).fetchone()
         return {
             "nodes": self.node_count(),
             "edges": self.edge_count(),
             "files": len(self.known_files()),
             "edge_types": {row["type"]: row["n"] for row in edge_types},
+            "unresolved_references": self.unresolved_count(),
+            "entry_points": int(entry_points),
         }
+
+    def entry_points(self) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT * FROM node WHERE is_entry_point = 1 ORDER BY id"
+        ).fetchall()
+        return [dict(r) for r in rows]
 
     def get_node(self, node_id: str) -> dict | None:
         row = self.conn.execute(
