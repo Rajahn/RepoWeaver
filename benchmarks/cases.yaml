@@ -1,0 +1,17 @@
+# RepoWeaver benchmark cases
+# Populated in T0.1 with public Java repos
+version: 1
+repos:
+  - name: spring-petclinic
+    url: https://github.com/spring-projects/spring-petclinic
+    purpose: Spring DI-heavy; tests injection-aware edges
+  - name: gson
+    url: https://github.com/google/gson
+    purpose: Comparable to CodeGraph published 93.3% Java coverage
+  - name: okhttp
+    url: https://github.com/square/okhttp
+    purpose: Call-chain depth
+  - name: mybatis-3
+    url: https://github.com/mybatis/mybatis-3
+    purpose: Generated-code noise filtering
+cases: []  # populated in T0.1
