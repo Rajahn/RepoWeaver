@@ -345,7 +345,14 @@ def explore(
             )
         else:
             _fill_understand_or_locate(
-                response, store, repo_root, query, seeds, depth, min_confidence, max_tokens
+                response,
+                store,
+                repo_root,
+                query,
+                seeds,
+                depth,
+                min_confidence,
+                max_tokens,
             )
 
         return response
@@ -417,17 +424,53 @@ _MAX_CANDIDATE_CALLERS = 5
 
 
 def _candidate_callers(store: GraphStore, node_id: str) -> list[dict]:
-    callers = store.neighbors(node_id, "in", 0.0)
-    callers.sort(key=lambda c: c[2], reverse=True)
-    return [
-        {
-            "qualified_name": caller["qualified_name"],
-            "file": caller["file"],
-            "edge_type": edge_type,
-            "confidence": confidence,
-        }
-        for caller, edge_type, confidence in callers[:_MAX_CANDIDATE_CALLERS]
-    ]
+    """Direct callers of a candidate. Java callers statically target the
+    *declared* type — usually the interface method — so an implementation
+    method's own in-edges are typically empty while its interface method
+    carries the callers. Walk IMPLEMENTS/EXTENDS out from the candidate's
+    owner to sibling declarations of the same member name and merge their
+    callers in, marked `via` so the agent knows the path."""
+    seen: dict[str, dict] = {}
+
+    def _absorb(edges, via: str | None) -> None:
+        for caller, edge_type, confidence in edges:
+            entry = seen.get(caller["qualified_name"])
+            if entry is None:
+                entry = {
+                    "qualified_name": caller["qualified_name"],
+                    "file": caller["file"],
+                    "edge_type": edge_type,
+                    "confidence": confidence,
+                }
+                if via:
+                    entry["via"] = via
+                seen[caller["qualified_name"]] = entry
+
+    _absorb(store.neighbors(node_id, "in", 0.0), None)
+
+    node = store.get_node(node_id)
+    if node is not None and "#" in node["qualified_name"]:
+        owner_qname, member = node["qualified_name"].split("#", 1)
+        member_name = member.split("(", 1)[0]
+        for sup, edge_type, _conf in (
+            store.neighbors(
+                store.find_by_qualified_name(owner_qname)[0]["id"], "out", 0.0
+            )
+            if store.find_by_qualified_name(owner_qname)
+            else []
+        ):
+            if edge_type not in ("IMPLEMENTS", "EXTENDS"):
+                continue
+            via = sup["qualified_name"]
+            for sibling in store.find_by_simple_name(member_name):
+                if sibling["id"] == node_id:
+                    continue
+                sib_owner = sibling["qualified_name"].split("#", 1)[0]
+                if sib_owner == via:
+                    _absorb(store.neighbors(sibling["id"], "in", 0.0), via)
+
+    ordered = sorted(seen.values(), key=lambda c: -c["confidence"])
+    return ordered[:_MAX_CANDIDATE_CALLERS]
 
 
 def _candidate_blast_summary(
@@ -498,35 +541,61 @@ def _cluster_weighted_score(seed) -> float:
     return score
 
 
+def _split_identifier_tokens(name: str) -> set[str]:
+    """Split a qualified name into lowercase word tokens: camelCase,
+    snake_case, package dots, and `#` separators all split. Splitting must
+    happen BEFORE lowercasing — lowercasing first fuses camelCase words
+    (DutyJudgement -> dutyjudgement) and destroys the word boundaries this
+    exists to find. FTS5 has the same fused-token limitation, which is why
+    coverage scoring lives here in Python."""
+    import re
+
+    out: set[str] = set()
+    for chunk in re.split(r"[^A-Za-z0-9]+", name):
+        pos = 0
+        while pos < len(chunk):
+            m = re.match(r"[A-Z]+(?![a-z])|[A-Z][a-z]*|[a-z]+|\d+", chunk[pos:])
+            if not m:
+                break
+            out.add(m.group(0).lower())
+            pos += m.end()
+    return out
+
+
+def _word_coverage(owner: str, query_words: list[str]) -> int:
+    """How many distinct query words the owner's whole qualified name covers."""
+    tokens = _split_identifier_tokens(owner)
+    return sum(1 for w in query_words if w in tokens)
+
+
 def _cluster_rerank(query: str, seeds: list) -> list:
-    """T3: for multi-word queries, rank by "owner cluster" rather than by
-    raw per-hit score. Several hits inside the same owner (e.g. a service
-    class and its methods, all matching different query words) are one
-    signal, not several independent ones, and a real target class should
-    outrank a single loud method match — especially a *Test method, which
-    tends to repeat production vocabulary in its name without being the
-    thing to read first."""
-    if len(query.strip().split()) < 2:
+    """T3: for multi-word queries, rank by *distinct query-word coverage*
+    per owner cluster first, then by coverage-weighted score. A test class
+    whose 12 same-prefix methods all match the `decide*` prefix covers only
+    ONE query word repeatedly; a service class named after the actual
+    subject (duty/judgement) covers different words and must win. Cluster
+    size is only a weak tie-break, never a score multiplier."""
+    query_words = [w.lower() for w in query.strip().split() if w]
+    if len(query_words) < 2:
         return seeds
 
-    cluster_score: dict[str, float] = {}
+    owners: dict[str, list] = {}
     for s in seeds:
         owner = _owner_of(s.qualified_name)
-        weighted = _cluster_weighted_score(s)
-        members = cluster_score.get(owner)
-        cluster_score[owner] = max(members or 0.0, weighted)
-    cluster_size: dict[str, int] = {}
-    for s in seeds:
-        owner = _owner_of(s.qualified_name)
-        cluster_size[owner] = cluster_size.get(owner, 0) + 1
-    for owner in cluster_score:
-        cluster_score[owner] += 0.1 * cluster_size[owner]
+        owners.setdefault(owner, []).append(s)
 
-    def sort_key(s):
-        owner = _owner_of(s.qualified_name)
-        return (-cluster_score[owner], -_cluster_weighted_score(s))
+    def owner_key(owner: str):
+        members = owners[owner]
+        coverage = _word_coverage(owner, query_words)
+        best = max(_cluster_weighted_score(s) for s in members)
+        return (-coverage, -best, -len(members))
 
-    return sorted(seeds, key=sort_key)
+    ranked_owners = sorted(owners, key=owner_key)
+    order = {owner: i for i, owner in enumerate(ranked_owners)}
+    return sorted(
+        seeds,
+        key=lambda s: (order[_owner_of(s.qualified_name)], -_cluster_weighted_score(s)),
+    )
 
 
 def _fill_understand_or_locate(

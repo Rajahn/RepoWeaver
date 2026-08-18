@@ -43,6 +43,23 @@ def test_bare_type_name_query_leads_with_the_class_slice(built_demo: Path) -> No
     assert top["span_end"] - top["span_start"] >= 3  # the class body, not a stub
 
 
+def test_candidate_callers_flow_through_interface_declaration(built_demo: Path) -> None:
+    """T2 hardening: an implementation method's callers arrive via the
+    interface declaration (Java static call sites target the declared
+    type), so the panorama must mark them `via` the interface."""
+    response = explore("greet", task="impact", repo=str(built_demo))
+    assert "candidates" in response
+    impl_cand = next(
+        c
+        for c in response["candidates"]
+        if c["qualified_name"] == "com.example.demo.EnglishGreeter#greet(String)"
+    )
+    callers = impl_cand["callers"]
+    assert any("via" in cl and "Greeter" in cl["via"] for cl in callers), (
+        f"expected interface-via caller, got {callers}"
+    )
+
+
 def test_type_prioritization_keeps_method_queries_unharmed(built_demo: Path) -> None:
     """Genuine same-family ambiguity (three distinct `greet` methods) still
     returns candidates, and a unique-name symbol query (Formatter) leads

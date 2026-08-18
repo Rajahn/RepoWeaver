@@ -26,7 +26,9 @@ from repoweaver.graph.store import GraphStore
 from repoweaver.indexer import Indexer
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "javademo"
-_OVERLOADS_FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "overloads"
+_OVERLOADS_FIXTURE = (
+    Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "overloads"
+)
 
 
 @dataclass
@@ -294,7 +296,9 @@ def _query_qualified_syntax_checks(repo_root: Path, c: _Check) -> None:
 
 def _query_overload_signature_checks(overloads_root: Path, c: _Check) -> None:
     result = explore(
-        query="Codec#fromJson(String,Class)", task="understand", repo=str(overloads_root)
+        query="Codec#fromJson(String,Class)",
+        task="understand",
+        repo=str(overloads_root),
     )
     c.check(
         "signature disambiguates a same-name overload",
@@ -328,11 +332,14 @@ def _query_overload_signature_checks(overloads_root: Path, c: _Check) -> None:
 def _query_ambiguity_panorama_checks(repo_root: Path, c: _Check) -> None:
     result = explore(query="greet", task="understand", repo=str(repo_root))
     candidates = result.get("candidates") or []
-    c.check("bare-name ambiguity ('greet') surfaces >=2 candidates", len(candidates) >= 2)
+    c.check(
+        "bare-name ambiguity ('greet') surfaces >=2 candidates", len(candidates) >= 2
+    )
     c.check(
         "every candidate carries callers (<=5) and a blast_summary",
         all(
-            len(cand.get("callers") or []) <= 5 and isinstance(cand.get("blast_summary"), dict)
+            len(cand.get("callers") or []) <= 5
+            and isinstance(cand.get("blast_summary"), dict)
             for cand in candidates
         ),
         str(candidates),
@@ -384,7 +391,9 @@ def _run_query_verification() -> VerifyResult:
     c = _Check(report)
 
     if not _FIXTURE.exists() or not _OVERLOADS_FIXTURE.exists():
-        return _fixture_missing(report, c, "javademo + overloads fixtures present", _FIXTURE)
+        return _fixture_missing(
+            report, c, "javademo + overloads fixtures present", _FIXTURE
+        )
 
     with _built_fixture_repo() as repo_root:
         report.append("-- T1: qualified-syntax direct resolution --")

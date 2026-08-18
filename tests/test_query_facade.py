@@ -83,7 +83,9 @@ def test_qualified_syntax_resolves_directly(built_javademo, query, task):
 
 def test_qualified_syntax_with_signature_disambiguates_overload(built_overloads):
     result = explore(
-        query="Codec#fromJson(String,Class)", task="understand", repo=str(built_overloads)
+        query="Codec#fromJson(String,Class)",
+        task="understand",
+        repo=str(built_overloads),
     )
     assert "candidates" not in result, result
     assert (
@@ -106,7 +108,9 @@ def test_qualified_syntax_normalizes_generics_and_whitespace(built_overloads):
 
 
 def test_qualified_syntax_short_owner_matches_bare_sig_form(built_overloads):
-    result = explore(query="write(String)", task="understand", repo=str(built_overloads))
+    result = explore(
+        query="write(String)", task="understand", repo=str(built_overloads)
+    )
     assert "candidates" not in result, result
     assert (
         result["slices"][0]["qualified_name"]
@@ -141,7 +145,9 @@ def test_bare_name_ambiguity_panorama_has_callers_and_blast_summary(built_javade
 
 
 def test_qualified_multi_match_returns_panorama(built_overloads):
-    result = explore(query="Codec#fromJson", task="understand", repo=str(built_overloads))
+    result = explore(
+        query="Codec#fromJson", task="understand", repo=str(built_overloads)
+    )
     assert "candidates" in result, result
     assert len(result["candidates"]) == 3
     assert result["slices"] == []
