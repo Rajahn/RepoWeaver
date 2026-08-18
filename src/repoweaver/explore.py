@@ -183,6 +183,8 @@ def explore(
         if not seeds:
             return response
 
+        seeds = _prioritize_seeds(query, seeds)
+
         ambiguity = _check_ambiguity(query, seeds)
         if ambiguity is not None and task != "debug":
             response["candidates"] = ambiguity
@@ -212,6 +214,23 @@ def explore(
 
 
 _TYPE_KINDS = {"class", "interface", "enum", "annotation"}
+
+
+def _prioritize_seeds(query: str, seeds: list) -> list:
+    """A bare-name query that exactly names a type declaration is almost
+    always a "show me this class" request. Put exact-name type nodes first
+    (stable within each tier by search score) so the class body leads the
+    response instead of its same-named constructors/methods — which is a
+    ranking concern, distinct from the genuine-ambiguity check below."""
+    bare = query.strip()
+    if not bare or any(c in bare for c in " ()#."):
+        return seeds
+
+    def tier(hit):
+        exact_type = hit.simple_name == bare and hit.kind in _TYPE_KINDS
+        return (0 if exact_type else 1, -hit.score)
+
+    return sorted(seeds, key=tier)
 
 
 def _check_ambiguity(query: str, seeds: list) -> list[dict] | None:
@@ -259,7 +278,12 @@ def _check_ambiguity(query: str, seeds: list) -> list[dict] | None:
 def _fill_understand_or_locate(
     response, store, repo_root, seeds, depth, min_confidence, max_tokens
 ) -> None:
-    slices: list[dict] = []
+    """Seed slices keep their (already prioritized) order — a bare-name
+    query's target class must lead the response. Neighbors are budget-ranked
+    separately (confidence desc, then smallest-first) so a large seed never
+    starves small high-confidence context slices."""
+    seed_slices: list[dict] = []
+    neighbor_slices: list[dict] = []
     visited: set[str] = set()
     nodes_visited = 0
     edges_traversed = 0
@@ -272,7 +296,7 @@ def _fill_understand_or_locate(
         if node is None:
             continue
         nodes_visited += 1
-        slices.append(
+        seed_slices.append(
             _make_slice(repo_root, node, confidence=1.0, provenance="tree_sitter_java")
         )
 
@@ -284,11 +308,14 @@ def _fill_understand_or_locate(
                 continue
             visited.add(neighbor["id"])
             nodes_visited += 1
-            slices.append(
+            neighbor_slices.append(
                 _make_slice(repo_root, neighbor, confidence, "tree_sitter_java")
             )
 
-    slices.sort(key=lambda s: (-s["confidence"], s["span_end"] - s["span_start"]))
+    neighbor_slices.sort(
+        key=lambda s: (-s["confidence"], s["span_end"] - s["span_start"])
+    )
+    slices = seed_slices + neighbor_slices
 
     response["slices"], skipped = _trim_to_budget(slices, max_tokens)
     response["stats"]["nodes_visited"] = nodes_visited

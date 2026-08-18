@@ -12,12 +12,36 @@ import json
 import os
 import sqlite3
 import time
+import zlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Self
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 _DEFAULT_BUSY_TIMEOUT_MS = 10_000
+
+_ZLIB_MAGIC = b"\x78"
+
+
+def _compress_payload(payload: str) -> bytes:
+    return zlib.compress(payload.encode("utf-8"), level=6)
+
+
+def _decompress_payload(stored) -> str:
+    """Accepts zlib-compressed rows and legacy plain-text rows alike; any
+    decode failure means the row predates the current format, so surface an
+    empty string (cache miss) rather than raising into a build."""
+    if isinstance(stored, bytes):
+        if stored[:1] == _ZLIB_MAGIC:
+            try:
+                return zlib.decompress(stored).decode("utf-8")
+            except zlib.error:
+                return ""
+        try:
+            return stored.decode("utf-8", errors="replace")
+        except UnicodeDecodeError:
+            return ""
+    return stored if isinstance(stored, str) else ""
 
 
 def edge_id(from_id: str, to_id: str, edge_type: str) -> str:
@@ -357,11 +381,18 @@ class GraphStore:
         return int(count)
 
     def get_file_refs_cache(self, file: str) -> tuple[str, str] | None:
-        """Returns (content_hash, payload_json) if a cache entry exists."""
+        """Returns (content_hash, payload_json) if a cache entry exists.
+
+        Payloads are stored zlib-compressed (repetitive AST JSON compresses
+        ~7x, which keeps `file_refs_cache` from dominating graph.db size).
+        Rows written by older versions (plain JSON) are still accepted —
+        anything that fails to decompress is treated as a cache miss."""
         row = self.conn.execute(
             "SELECT content_hash, payload FROM file_refs_cache WHERE file = ?", (file,)
         ).fetchone()
-        return (row["content_hash"], row["payload"]) if row else None
+        if row is None:
+            return None
+        return (row["content_hash"], _decompress_payload(row["payload"]))
 
     def set_file_refs_cache(self, file: str, content_hash: str, payload: str) -> None:
         self.conn.execute(
@@ -371,7 +402,7 @@ class GraphStore:
             ON CONFLICT(file) DO UPDATE SET
                 content_hash=excluded.content_hash, payload=excluded.payload
             """,
-            (file, content_hash, payload),
+            (file, content_hash, _compress_payload(payload)),
         )
 
     def upsert_file_meta(self, file: str, content_hash: str, node_count: int) -> None:

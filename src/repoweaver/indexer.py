@@ -221,8 +221,11 @@ class Indexer:
             else:
                 cached = self.store.get_file_refs_cache(rel)
                 pf = None
-                if cached is not None and cached[0] == content_hash:
-                    pf = _parsed_file_from_json(cached[1], self.repo_root)
+                if cached is not None and cached[0] == content_hash and cached[1]:
+                    try:
+                        pf = _parsed_file_from_json(cached[1], self.repo_root)
+                    except (ValueError, KeyError, TypeError):
+                        pf = None  # corrupt/legacy payload — treat as a miss
                 if pf is None:
                     # Cache miss (first-ever incremental call, drift, or the
                     # cached source can no longer be read back off disk) —
