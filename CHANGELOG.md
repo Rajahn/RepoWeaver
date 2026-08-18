@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.4.0 — Query facade (M4-0)
+
+A real-repo validation pass found the graph engine itself was solid but the
+retrieval layer sat on top of it without using it well: exact-symbol queries
+went through BM25 like everything else, ambiguity was reported but not
+answered, and multi-word queries could rank a loud `*Test` method above the
+service class the query actually meant. This release only touches
+`explore.py` (retrieval/response) and `indexer.py`'s entry-point-table
+resolution — no parser/resolver/schema changes. See
+[ADR-0004](docs/adr/0004-query-facade.md) and
+[explore-contract v1.2](docs/explore-contract.md).
+
+### Added
+
+- **Qualified-syntax direct resolution**: `Class#method`, `Class.method`,
+  and `method(Sig)` queries (all optionally carrying a `(Sig)` suffix)
+  resolve directly against the graph and skip BM25 when they land on exactly
+  one node — for every `task`. A shape match that resolves to zero nodes
+  (e.g. a bare fully-qualified type name) falls back to normal search
+  rather than returning empty.
+- **Ambiguity panorama**: whenever a query resolves to 2+ candidates (via
+  qualified syntax or bare-name search), every `candidates[]` entry now
+  carries `file`/`span_start`/`span_end`/`signature` plus `callers` (direct
+  callers, max 5, confidence-sorted) and `blast_summary` (risk-level →
+  count) — the panorama answers the query without a follow-up call.
+- **Owner-cluster reranking**: multi-word queries now cluster same-owner
+  hits (class + its matching methods/fields) and rank clusters ahead of
+  individual hits, weighting type nodes higher and `*Test`-suffixed owners
+  lower.
+- **Configurable entry-point annotations**: `Indexer` reads an optional
+  `.repoweaver/entrypoints.yaml` (`mode: merge` default, or `replace`) to
+  extend or override the built-in public annotation table
+  (`ENTRY_POINT_ANNOTATIONS`, unchanged — Spring/messaging annotations
+  only). Lets callers register their own internal annotation taxonomy
+  without any internal names ever appearing in this repo.
+- **`fabric verify --level query`**: machine-verifies all four behaviours
+  above against fixture repos; wired into `make ci`.
+- `tests/test_query_facade.py`: 25 new tests covering qualified-syntax
+  forms × all four tasks, panorama structure, cluster reranking, candidate
+  context fields, and entrypoints.yaml merge/replace/absent.
+
 ## v0.3.2 — Cross-audit clean-up
 
 Two independent v0.3.1 audits were cross-checked against each other; the

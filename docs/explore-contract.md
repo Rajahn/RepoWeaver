@@ -1,6 +1,6 @@
-# `explore()` Contract v1.1
+# `explore()` Contract v1.2
 
-> Status: **FROZEN v1.1** (2026-08-18) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md) and [ADR-0002](adr/0002-m2-resolution-and-freshness.md)
+> Status: **FROZEN v1.2** (2026-08-18) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md), [ADR-0002](adr/0002-m2-resolution-and-freshness.md) and [ADR-0004](adr/0004-query-facade.md)
 > This is the ONLY tool exposed via MCP. All other tools are hidden by default.
 
 ---
@@ -22,12 +22,35 @@ def explore(
 
 | param | type | description |
 |-------|------|-------------|
-| `query` | str | Natural-language or symbol-name query. Examples: `"who calls submitDuty"`, `"OrderService#place"`, `"authentication flow"` |
+| `query` | str | Natural-language or symbol-name query. Examples: `"who calls submitDuty"`, `"OrderService#place"`, `"authentication flow"`. See **Qualified syntax** below for direct-hit forms |
 | `task` | enum | See Task Modes below |
 | `repo` | str | Repo root path. Default `.` (cwd). Supports multiple indexed repos via absolute path |
 | `max_tokens` | int | Soft budget for combined source slices in response. Default 4000 |
 | `depth` | int | Graph diffusion hop depth. Default 2. Max 4 |
 | `min_confidence` | float | Edge confidence threshold. Default 0.5 |
+
+---
+
+## Qualified syntax (v1.2, ADR-0004)
+
+Three query shapes are recognized as a *qualified* reference to a specific
+member and are resolved directly against the graph (`find_by_simple_name` +
+owner/signature filtering), skipping BM25 entirely:
+
+| form | example | notes |
+|------|---------|-------|
+| `Class#method` | `MarginRuleServiceImpl#querySellerMarginAmount` | owner may be the short (simple) class name — no package required |
+| `Class.method` | `Formatter.format` | dot separator; falls back to normal search if it doesn't resolve (e.g. it was actually a fully-qualified type name) |
+| `method(Sig)` | `fromJson(String,Class)` | no owner; signature (comma-separated simple type names, generics/arrays stripped) disambiguates overloads |
+
+All three forms also accept an optional `(Sig)` suffix (e.g.
+`Class#method(Sig)`). Resolution outcome:
+
+- **Exactly one match** → used directly as the seed, for every `task`.
+- **Zero matches** → falls back to the normal BM25 + PageRank search (the
+  qualified-shape guess was wrong, e.g. a bare fully-qualified type name).
+- **Two or more matches** (an unqualified overload set) → same handling as
+  bare-name ambiguity below: a `candidates` panorama, not `slices`.
 
 ---
 
@@ -113,6 +136,21 @@ interface Candidate {
   qualified_name: string;
   file: string;
   score: number;
+
+  // v1.2 additive (query facade, ADR-0004) — the panorama IS the answer:
+  // context to read the candidate without a follow-up call.
+  span_start?: number;
+  span_end?: number;
+  signature?: string;
+  callers?: CandidateCaller[];       // direct (depth-1) callers, max 5, confidence desc
+  blast_summary?: Record<string, number>; // risk level -> count, same BFS as task=impact
+}
+
+interface CandidateCaller {
+  qualified_name: string;
+  file: string;
+  edge_type: string;
+  confidence: number;
 }
 ```
 
@@ -134,7 +172,7 @@ Always verify with grep/source before concluding.
 | `stats.freshness == "stale"` | Result still returned, but `freshness` is `"stale"`. Agent MUST run `fabric build` or start `fabric watch` before acting |
 | Repo not indexed | Error: `{"error": "not_indexed", "hint": "run: fabric build"}` |
 | No results above `min_confidence` | `slices: []`, `blind_spots` still present |
-| Multiple candidates, unresolved | `slices: []`, `candidates` populated with ranked list |
+| Multiple candidates, unresolved | `slices: []`, `candidates` populated with ranked list, each carrying callers/blast_summary/context (v1.2) — the panorama answers the query on its own |
 
 ---
 
@@ -170,3 +208,4 @@ No gaps. Contract covers all five command shapes.
 | v1 (frozen) | 2026-08-17 | M1 response and four task modes. See ADR-0001. |
 | v1.1 (frozen) | 2026-08-18 | Backward-compatible slice entry-point metadata; graph traversal may include `REFERENCES`; ambiguous references remain outside resolved edges. See ADR-0002. |
 | v1.1 (unchanged) | 2026-08-18 | M3 typed overlay (ADR-0003) needs no contract bump: `edge_type`/`provenance` are already free-text strings, so slices may now surface `CALLS_TYPED`/`REFERENCES_TYPED`/`EXTENDS_TYPED`/`IMPLEMENTS_TYPED` and `scip_java`/`scip_java+tree_sitter_java` values without any new field or schema change on the response side. |
+| v1.2 (frozen) | 2026-08-18 | Query facade (M4-0, ADR-0004): qualified-syntax (`Class#method`/`Class.method`/`method(Sig)`) direct resolution bypassing BM25; `Candidate` gains additive `span_start`/`span_end`/`signature`/`callers`/`blast_summary` so an ambiguity panorama answers the query without a follow-up call; multi-word queries rank by owner cluster instead of raw per-hit score. No `Slice`/`BlastRadiusEntry`/`CallPathEntry` field changes. |

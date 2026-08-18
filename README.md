@@ -38,7 +38,8 @@ Six primitives, all independently validated across multiple open-source tools:
 | M1 — Fabric MVP (Java parser + edges + FTS5 + PageRank + MCP) | v0.1.0 | ✅ shipped |
 | M2 — Freshness & confidence (auto-sync + disambiguation + confidence edges) | v0.2.0 | ✅ shipped |
 | M3 — Type precision overlay (SCIP) | v0.3.0 | ✅ shipped |
-| M4 — Runtime overlay (OTel/Jaeger trace → edge weights) | v0.4.0 | planned |
+| M4-0 — Query facade (qualified syntax, ambiguity panorama, cluster ranking, configurable entry points) | v0.4.0 | ✅ shipped |
+| M4 — Runtime overlay (OTel/Jaeger trace → edge weights) | v0.4.1 | planned |
 
 Each milestone ships a `fabric verify --level mN` gate that runs in CI.
 
@@ -97,6 +98,7 @@ uv run fabric watch /path/to/your/java/repo      # OS-event auto-sync, 2s deboun
 uv run fabric verify --level m2                  # watcher + incremental consistency gate
 uv run fabric overlay scip --repo . --index path/to/index.scip  # layer typed edges (M3)
 uv run fabric verify --level m3                  # typed overlay merge/precision gate
+uv run fabric verify --level query               # query-facade gate (qualified syntax, panorama, cluster rank)
 uv run fabric serve                              # start the MCP server (explore() tool)
 ```
 
@@ -105,8 +107,12 @@ typed overlay. M2 adds conservative overload/type resolution, `REFERENCES`,
 annotation symbols, unresolved-candidate storage, framework entry-point
 metadata and auto-sync. M3 adds `fabric overlay scip`, which merges
 compiler-derived `*_TYPED` edges onto the existing graph without ever
-dropping an edge — see `docs/adr/0003-typed-overlay.md`. No LLM or external
-network call is made at runtime.
+dropping an edge — see `docs/adr/0003-typed-overlay.md`. v0.4.0 adds a
+query facade in front of the same graph — see `docs/adr/0004-query-facade.md`
+— plus an optional `.repoweaver/entrypoints.yaml` in your own repo to extend
+or replace the built-in (public-annotation-only) entry-point table with your
+own project's annotations, without ever committing internal names here. No
+LLM or external network call is made at runtime.
 
 ## MCP tool
 

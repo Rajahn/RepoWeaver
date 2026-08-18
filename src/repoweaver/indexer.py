@@ -18,6 +18,8 @@ import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+import yaml
+
 from repoweaver.graph.store import EdgeRow, GraphStore, NodeRow, UnresolvedReferenceRow
 from repoweaver.parser.java import (
     PARSER_VERSION,
@@ -87,12 +89,56 @@ def _safe_parse(parser: JavaParser, path: Path) -> ParsedFile | None:
         return None
 
 
-def _entry_point_kind(annotations: list[str]) -> str:
+def _entry_point_kind(annotations: list[str], table: dict[str, str]) -> str:
     for name in annotations:
-        kind = ENTRY_POINT_ANNOTATIONS.get(name)
+        kind = table.get(name)
         if kind:
             return kind
     return ""
+
+
+_ENTRYPOINTS_CONFIG_REL = Path(".repoweaver") / "entrypoints.yaml"
+
+
+def load_entry_point_annotations(repo_root: Path) -> dict[str, str]:
+    """Built-in public-annotation table, optionally overridden by
+    `.repoweaver/entrypoints.yaml`.
+
+    File format:
+        mode: merge      # "merge" (default, adds to/overrides built-ins) or "replace"
+        annotations:
+            MyController: HTTP_CONTROLLER
+            MyBatchJob: SCHEDULED
+
+    A missing, empty, or malformed config file silently falls back to the
+    built-in table — entry-point detection must never crash a build over a
+    bad config file.
+    """
+    config_path = Path(repo_root) / _ENTRYPOINTS_CONFIG_REL
+    if not config_path.exists():
+        return dict(ENTRY_POINT_ANNOTATIONS)
+
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return dict(ENTRY_POINT_ANNOTATIONS)
+
+    if not isinstance(raw, dict):
+        return dict(ENTRY_POINT_ANNOTATIONS)
+
+    overrides = raw.get("annotations")
+    if not isinstance(overrides, dict):
+        return dict(ENTRY_POINT_ANNOTATIONS)
+    overrides = {
+        str(k): str(v) for k, v in overrides.items() if isinstance(k, str) and v
+    }
+
+    mode = raw.get("mode", "merge")
+    if mode == "replace":
+        return overrides
+    merged = dict(ENTRY_POINT_ANNOTATIONS)
+    merged.update(overrides)
+    return merged
 
 
 @dataclass
@@ -174,6 +220,7 @@ class Indexer:
     def __init__(self, repo_root: str | Path, store: GraphStore) -> None:
         self.repo_root = Path(repo_root).resolve()
         self.store = store
+        self.entry_point_annotations = load_entry_point_annotations(self.repo_root)
 
     def build(self) -> BuildStats:
         all_files = _discover_files(self.repo_root)
@@ -248,11 +295,8 @@ class Indexer:
             rows = []
             for rec in pf.nodes:
                 nid = node_id(rec.kind, self.repo_root, pf.file, rec.qualified_name)
-                is_entry, kind = (
-                    (True, _entry_point_kind(rec.annotations))
-                    if _entry_point_kind(rec.annotations)
-                    else (False, "")
-                )
+                kind = _entry_point_kind(rec.annotations, self.entry_point_annotations)
+                is_entry = bool(kind)
                 row = NodeRow(
                     id=nid,
                     kind=rec.kind,
@@ -365,6 +409,7 @@ __all__ = [
     "BuildStats",
     "Indexer",
     "file_hash",
+    "load_entry_point_annotations",
     "node_id",
     "repo_slug",
 ]

@@ -26,6 +26,7 @@ from repoweaver.graph.store import GraphStore
 from repoweaver.indexer import Indexer
 
 _FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "javademo"
+_OVERLOADS_FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixtures" / "overloads"
 
 
 @dataclass
@@ -64,10 +65,10 @@ def _fixture_missing(
 
 
 @contextmanager
-def _built_fixture_repo():
+def _built_fixture_repo(fixture: Path = _FIXTURE, name: str = "javademo"):
     with tempfile.TemporaryDirectory(prefix="repoweaver-verify-") as tmp:
-        repo_root = Path(tmp) / "javademo"
-        shutil.copytree(_FIXTURE, repo_root)
+        repo_root = Path(tmp) / name
+        shutil.copytree(fixture, repo_root)
         db_path = repo_root / ".repoweaver" / "graph.db"
         db_path.parent.mkdir(parents=True, exist_ok=True)
         with GraphStore(db_path) as store:
@@ -80,6 +81,7 @@ def run_verification(level: str, repo: Path) -> VerifyResult:
         "m1": _run_m1_verification,
         "m2": _run_m2_verification,
         "m3": _run_m3_verification,
+        "query": _run_query_verification,
         "benchmark": _run_benchmark_verification,
     }
     runner = runners.get(level)
@@ -89,7 +91,7 @@ def run_verification(level: str, repo: Path) -> VerifyResult:
             [
                 (
                     f"Level '{level}' is not implemented. "
-                    "Supported: 'm1', 'm2', 'm3', 'benchmark'."
+                    "Supported: 'm1', 'm2', 'm3', 'query', 'benchmark'."
                 )
             ],
         )
@@ -264,6 +266,139 @@ def _run_m1_verification() -> VerifyResult:
 
         report.append("-- token budget --")
         _m1_budget_checks(repo_root, c)
+
+    return _finish(report, c)
+
+
+# ----------------------------------------------------------------------
+# query — v0.4.0 query-facade guarantees (T1-T4, ADR-0004)
+# ----------------------------------------------------------------------
+
+
+def _query_qualified_syntax_checks(repo_root: Path, c: _Check) -> None:
+    for query in ("Formatter#format", "Formatter.format", "format(String)"):
+        result = explore(query=query, task="impact", repo=str(repo_root))
+        c.check(
+            f"qualified syntax '{query}' resolves directly (no candidates)",
+            "candidates" not in result,
+            str(result.get("candidates")),
+        )
+        c.check(
+            f"qualified syntax '{query}' seeds the exact node",
+            bool(result.get("slices"))
+            and result["slices"][0]["qualified_name"]
+            == "com.example.demo.Formatter#format(String)",
+            str(result.get("slices")),
+        )
+
+
+def _query_overload_signature_checks(overloads_root: Path, c: _Check) -> None:
+    result = explore(
+        query="Codec#fromJson(String,Class)", task="understand", repo=str(overloads_root)
+    )
+    c.check(
+        "signature disambiguates a same-name overload",
+        "candidates" not in result
+        and bool(result.get("slices"))
+        and result["slices"][0]["qualified_name"]
+        == "com.example.overloads.Codec#fromJson(String,Class)",
+        str(result),
+    )
+
+    panorama = explore(
+        query="Codec#fromJson", task="understand", repo=str(overloads_root)
+    )
+    c.check(
+        "owner-only qualified query with 3 overloads falls to a panorama",
+        len(panorama.get("candidates") or []) == 3,
+        str(panorama.get("candidates")),
+    )
+    for candidate in panorama.get("candidates") or []:
+        c.check(
+            f"candidate {candidate.get('qualified_name')} carries callers+blast_summary+context",
+            "callers" in candidate
+            and "blast_summary" in candidate
+            and "file" in candidate
+            and "span_start" in candidate
+            and "signature" in candidate,
+            str(candidate),
+        )
+
+
+def _query_ambiguity_panorama_checks(repo_root: Path, c: _Check) -> None:
+    result = explore(query="greet", task="understand", repo=str(repo_root))
+    candidates = result.get("candidates") or []
+    c.check("bare-name ambiguity ('greet') surfaces >=2 candidates", len(candidates) >= 2)
+    c.check(
+        "every candidate carries callers (<=5) and a blast_summary",
+        all(
+            len(cand.get("callers") or []) <= 5 and isinstance(cand.get("blast_summary"), dict)
+            for cand in candidates
+        ),
+        str(candidates),
+    )
+
+
+def _query_cluster_rerank_checks(c: _Check) -> None:
+    with tempfile.TemporaryDirectory(prefix="repoweaver-verify-query-") as tmp:
+        repo_root = Path(tmp) / "cluster"
+        pkg = repo_root / "com" / "example" / "duty"
+        pkg.mkdir(parents=True)
+        (pkg / "DutyJudgementService.java").write_text(
+            "package com.example.duty;\n"
+            "public class DutyJudgementService {\n"
+            "    public void decide() {}\n"
+            "    public void judgement() {}\n"
+            "    public void rule() {}\n"
+            "}\n"
+        )
+        (pkg / "StockOutRuleStrategyTest.java").write_text(
+            "package com.example.duty;\n"
+            "public class StockOutRuleStrategyTest {\n"
+            "    public void decideReasonBBBRuleJudgementDuty() {}\n"
+            "}\n"
+        )
+        db_path = repo_root / ".repoweaver" / "graph.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build()
+
+        result = explore(
+            query="duty judgement decide rule", task="locate", repo=str(repo_root)
+        )
+        top = (result.get("slices") or [{}])[0].get("qualified_name", "")
+        c.check(
+            "multi-word query ranks the service-class cluster above a loud Test method",
+            "DutyJudgementService" in top and "StockOutRuleStrategyTest" not in top,
+            str(result.get("slices", [])[:2]),
+        )
+
+
+def _run_query_verification() -> VerifyResult:
+    """`fabric verify --level query` — machine-verifies the v0.4.0
+    query-facade layer: qualified-syntax direct resolution bypassing BM25
+    (T1), ambiguity-as-panorama with callers/blast_summary (T2), owner-cluster
+    reranking for multi-word queries (T3), and candidate context fields (T4).
+    See docs/adr/0004-query-facade.md."""
+    report: list[str] = ["RepoWeaver verify --level query"]
+    c = _Check(report)
+
+    if not _FIXTURE.exists() or not _OVERLOADS_FIXTURE.exists():
+        return _fixture_missing(report, c, "javademo + overloads fixtures present", _FIXTURE)
+
+    with _built_fixture_repo() as repo_root:
+        report.append("-- T1: qualified-syntax direct resolution --")
+        _query_qualified_syntax_checks(repo_root, c)
+
+        report.append("-- T2: bare-name ambiguity panorama --")
+        _query_ambiguity_panorama_checks(repo_root, c)
+
+    with _built_fixture_repo(_OVERLOADS_FIXTURE, "overloads") as overloads_root:
+        report.append("-- T1/T2: signature-disambiguated overloads + panorama --")
+        _query_overload_signature_checks(overloads_root, c)
+
+    report.append("-- T3: owner-cluster reranking --")
+    _query_cluster_rerank_checks(c)
 
     return _finish(report, c)
 

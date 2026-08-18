@@ -8,7 +8,12 @@ from typing import Literal
 
 from repoweaver.graph.store import GraphStore
 from repoweaver.indexer import Indexer
-from repoweaver.search.engine import SearchEngine, SearchQuery, personalized_pagerank
+from repoweaver.search.engine import (
+    SearchEngine,
+    SearchQuery,
+    SearchResult,
+    personalized_pagerank,
+)
 
 BLIND_SPOTS = (
     "Static analysis only. Not represented: Spring bean injection dispatch beyond "
@@ -149,6 +154,112 @@ def _freshness(store: GraphStore, repo_root: Path) -> str:
     return "ok" if fresh else "stale"
 
 
+_IDENT = r"[A-Za-z_$][\w$]*"
+
+# T1 qualified-syntax pre-check: `Class#method`, `Class.method`, `method(Sig)`.
+# All three accept an optional `(Sig)` suffix; a query matching one of these
+# shapes is resolved directly against the graph (find_by_simple_name +
+# owner/signature filtering) and, when it lands on exactly one node, used as
+# the seed without ever going through BM25. See docs/adr/0004.
+_HASH_FORM = re.compile(
+    rf"^(?P<owner>{_IDENT}(?:\.{_IDENT})*)#(?P<name><init>|{_IDENT})"
+    rf"(?:\((?P<sig>[^()]*)\))?$"
+)
+_DOT_FORM = re.compile(
+    rf"^(?P<owner>{_IDENT}(?:\.{_IDENT})*)\.(?P<name>{_IDENT})"
+    rf"(?:\((?P<sig>[^()]*)\))?$"
+)
+_BARE_SIG_FORM = re.compile(rf"^(?P<name>{_IDENT})\((?P<sig>[^()]*)\)$")
+
+
+def _strip_type_decoration(raw: str) -> str:
+    """Mirror parser.java._simple_type_name: drop generics/arrays/qualifiers
+    so a user-typed signature ("Class<?>", "java.lang.String") lines up with
+    the simple-name signature form stored in `qualified_name`."""
+    raw = re.sub(r"<.*>", "", raw.strip())
+    raw = raw.rstrip("[] ")
+    if "." in raw:
+        raw = raw.rsplit(".", 1)[-1]
+    return raw.strip()
+
+
+def _normalize_sig(sig: str) -> str:
+    return ",".join(_strip_type_decoration(p) for p in sig.split(",") if p.strip())
+
+
+def _member_sig(qualified_name: str) -> str | None:
+    if "#" not in qualified_name:
+        return None
+    member = qualified_name.split("#", 1)[1]
+    if "(" not in member:
+        return None
+    return member[member.index("(") + 1 : member.rindex(")")]
+
+
+def _owner_of(qualified_name: str) -> str:
+    return qualified_name.split("#", 1)[0]
+
+
+def _lookup_qualified_member(
+    store: GraphStore, owner: str | None, name: str, sig: str | None
+) -> list[dict]:
+    candidates = store.find_by_simple_name(name)
+    if owner is not None:
+        short_owner = owner.rsplit(".", 1)[-1]
+        candidates = [
+            n
+            for n in candidates
+            if _owner_of(n["qualified_name"]) == owner
+            or _owner_of(n["qualified_name"]).rsplit(".", 1)[-1] == short_owner
+        ]
+    if sig is not None:
+        norm_sig = _normalize_sig(sig)
+        candidates = [
+            n
+            for n in candidates
+            if _member_sig(n["qualified_name"]) is not None
+            and _normalize_sig(_member_sig(n["qualified_name"])) == norm_sig
+        ]
+    return candidates
+
+
+def _resolve_qualified_query(query: str, store: GraphStore) -> tuple[list[dict], bool]:
+    """Returns (matching_nodes, is_qualified_form). `is_qualified_form` is True
+    whenever the query shape matched one of the three qualified forms, even if
+    it resolved to zero nodes (in which case the caller falls back to the
+    normal BM25 path — the shape guess was wrong, e.g. a fully-qualified type
+    name like "com.example.Foo" also parses as a dot-form owner.name)."""
+    q = query.strip()
+    if not q:
+        return [], False
+    for pattern in (_HASH_FORM, _DOT_FORM, _BARE_SIG_FORM):
+        m = pattern.match(q)
+        if not m:
+            continue
+        groups = m.groupdict()
+        owner = groups.get("owner")
+        return (
+            _lookup_qualified_member(store, owner, groups["name"], groups.get("sig")),
+            True,
+        )
+    return [], False
+
+
+def _seed_from_node(node: dict) -> SearchResult:
+    return SearchResult(
+        node_id=node["id"],
+        qualified_name=node["qualified_name"],
+        simple_name=node["simple_name"],
+        score=1.0,
+        bm25_score=1.0,
+        kind=node["kind"],
+        file=node["file"],
+        span_start=node["span_start"],
+        span_end=node["span_end"],
+        signature=node.get("signature") or "",
+    )
+
+
 def explore(
     query: str,
     task: Task = "understand",
@@ -167,28 +278,55 @@ def explore(
     with GraphStore(db_path) as store:
         freshness = _freshness(store, repo_root)
         engine = SearchEngine(store)
-        seeds = engine.search(
-            SearchQuery(
-                query=query,
-                max_results=30,
-                min_confidence=min_confidence,
-                depth=depth,
-                task=task,
-            )
-        )
 
         response = _base_response(query, task, repo)
         response["stats"]["freshness"] = freshness
 
-        if not seeds:
-            return response
+        qualified_nodes, is_qualified = _resolve_qualified_query(query, store)
 
-        seeds = _prioritize_seeds(query, seeds)
+        if is_qualified and qualified_nodes:
+            if len(qualified_nodes) == 1:
+                seeds = [_seed_from_node(qualified_nodes[0])]
+            elif task == "debug":
+                seeds = [_seed_from_node(n) for n in qualified_nodes]
+            else:
+                response["candidates"] = _build_candidates(
+                    store,
+                    [
+                        {
+                            "node_id": n["id"],
+                            "qualified_name": n["qualified_name"],
+                            "file": n["file"],
+                            "score": 1.0,
+                        }
+                        for n in qualified_nodes
+                    ],
+                    depth,
+                    min_confidence,
+                )
+                return response
+        else:
+            seeds = engine.search(
+                SearchQuery(
+                    query=query,
+                    max_results=30,
+                    min_confidence=min_confidence,
+                    depth=depth,
+                    task=task,
+                )
+            )
 
-        ambiguity = _check_ambiguity(query, seeds)
-        if ambiguity is not None and task != "debug":
-            response["candidates"] = ambiguity
-            return response
+            if not seeds:
+                return response
+
+            seeds = _prioritize_seeds(query, seeds)
+
+            ambiguity = _check_ambiguity(query, seeds)
+            if ambiguity is not None and task != "debug":
+                response["candidates"] = _build_candidates(
+                    store, ambiguity, depth, min_confidence
+                )
+                return response
 
         if task == "impact":
             _fill_impact(
@@ -207,7 +345,7 @@ def explore(
             )
         else:
             _fill_understand_or_locate(
-                response, store, repo_root, seeds, depth, min_confidence, max_tokens
+                response, store, repo_root, query, seeds, depth, min_confidence, max_tokens
             )
 
         return response
@@ -275,13 +413,135 @@ def _check_ambiguity(query: str, seeds: list) -> list[dict] | None:
     ]
 
 
+_MAX_CANDIDATE_CALLERS = 5
+
+
+def _candidate_callers(store: GraphStore, node_id: str) -> list[dict]:
+    callers = store.neighbors(node_id, "in", 0.0)
+    callers.sort(key=lambda c: c[2], reverse=True)
+    return [
+        {
+            "qualified_name": caller["qualified_name"],
+            "file": caller["file"],
+            "edge_type": edge_type,
+            "confidence": confidence,
+        }
+        for caller, edge_type, confidence in callers[:_MAX_CANDIDATE_CALLERS]
+    ]
+
+
+def _candidate_blast_summary(
+    store: GraphStore, node_id: str, depth: int, min_confidence: float
+) -> dict[str, int]:
+    """Count-by-risk-level summary of the reverse call-graph — the same BFS
+    `_fill_impact` runs, without materializing slices, so a full-panic
+    disambiguation response stays cheap."""
+    summary: dict[str, int] = {}
+    visited = {node_id}
+    frontier = [node_id]
+    for hop in range(1, max(depth, 1) + 1):
+        next_frontier = []
+        for nid in frontier:
+            for caller, _edge_type, confidence in store.neighbors(
+                nid, "in", min_confidence
+            ):
+                if caller["id"] in visited:
+                    continue
+                visited.add(caller["id"])
+                next_frontier.append(caller["id"])
+                risk = _risk_level(hop, confidence)
+                summary[risk] = summary.get(risk, 0) + 1
+        frontier = next_frontier
+        if not frontier:
+            break
+    return summary
+
+
+def _build_candidates(
+    store: GraphStore, candidates: list[dict], depth: int, min_confidence: float
+) -> list[dict]:
+    """T2/T4: turns a bare (node_id, qualified_name, file, score) candidate
+    list into a full disambiguation panorama — each candidate carries enough
+    context (file/span/signature, its direct callers, and a blast-radius
+    count-by-risk summary) that the ambiguity response answers the query on
+    its own, without a follow-up round trip. Response size is bounded by
+    len(candidates) * _MAX_CANDIDATE_CALLERS, not by graph size."""
+    enriched = []
+    for c in candidates:
+        node = store.get_node(c["node_id"])
+        item = dict(c)
+        if node is not None:
+            item["file"] = node["file"]
+            item["span_start"] = node["span_start"]
+            item["span_end"] = node["span_end"]
+            item["signature"] = node.get("signature") or ""
+        item["callers"] = _candidate_callers(store, c["node_id"])
+        item["blast_summary"] = _candidate_blast_summary(
+            store, c["node_id"], depth, min_confidence
+        )
+        enriched.append(item)
+    return enriched
+
+
+_TEST_SUFFIX = "Test"
+_TYPE_KIND_WEIGHT = 1.5
+_TEST_OWNER_WEIGHT = 0.5
+
+
+def _cluster_weighted_score(seed) -> float:
+    score = seed.score
+    if seed.kind in _TYPE_KINDS:
+        score *= _TYPE_KIND_WEIGHT
+    owner_simple = _owner_of(seed.qualified_name).rsplit(".", 1)[-1]
+    if owner_simple.endswith(_TEST_SUFFIX):
+        score *= _TEST_OWNER_WEIGHT
+    return score
+
+
+def _cluster_rerank(query: str, seeds: list) -> list:
+    """T3: for multi-word queries, rank by "owner cluster" rather than by
+    raw per-hit score. Several hits inside the same owner (e.g. a service
+    class and its methods, all matching different query words) are one
+    signal, not several independent ones, and a real target class should
+    outrank a single loud method match — especially a *Test method, which
+    tends to repeat production vocabulary in its name without being the
+    thing to read first."""
+    if len(query.strip().split()) < 2:
+        return seeds
+
+    cluster_score: dict[str, float] = {}
+    for s in seeds:
+        owner = _owner_of(s.qualified_name)
+        weighted = _cluster_weighted_score(s)
+        members = cluster_score.get(owner)
+        cluster_score[owner] = max(members or 0.0, weighted)
+    cluster_size: dict[str, int] = {}
+    for s in seeds:
+        owner = _owner_of(s.qualified_name)
+        cluster_size[owner] = cluster_size.get(owner, 0) + 1
+    for owner in cluster_score:
+        cluster_score[owner] += 0.1 * cluster_size[owner]
+
+    def sort_key(s):
+        owner = _owner_of(s.qualified_name)
+        return (-cluster_score[owner], -_cluster_weighted_score(s))
+
+    return sorted(seeds, key=sort_key)
+
+
 def _fill_understand_or_locate(
-    response, store, repo_root, seeds, depth, min_confidence, max_tokens
+    response, store, repo_root, query, seeds, depth, min_confidence, max_tokens
 ) -> None:
     """Seed slices keep their (already prioritized) order — a bare-name
     query's target class must lead the response. Neighbors are budget-ranked
     separately (confidence desc, then smallest-first) so a large seed never
-    starves small high-confidence context slices."""
+    starves small high-confidence context slices.
+
+    Multi-word queries get one more reorder pass first: T3 clusters same-owner
+    hits (a class and its own matching methods/fields are one signal, not
+    several) so the owning type leads instead of a same-owner method that
+    happened to score slightly higher — see `_cluster_rerank`."""
+    seeds = _cluster_rerank(query, seeds)
     seed_slices: list[dict] = []
     neighbor_slices: list[dict] = []
     visited: set[str] = set()
@@ -414,7 +674,7 @@ def _fill_debug(
 
     if to_seed is None:
         _fill_understand_or_locate(
-            response, store, repo_root, seeds, depth, min_confidence, max_tokens
+            response, store, repo_root, query, seeds, depth, min_confidence, max_tokens
         )
         response["call_path"] = []
         return
