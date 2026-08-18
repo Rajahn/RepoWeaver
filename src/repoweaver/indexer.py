@@ -97,7 +97,37 @@ def _entry_point_kind(annotations: list[str], table: dict[str, str]) -> str:
     return ""
 
 
+_TYPE_KINDS_ENTRY = {"class", "interface", "enum", "annotation"}
+
+
+def _pattern_entry_kind(pf, qualified_name: str, patterns: dict[str, str]) -> str:
+    """Entry kind from implements/extends simple-name suffix patterns.
+    Only type declarations are candidates (a method never implements
+    anything). Uses the file's raw type_refs — supertype simple names —
+    which is exactly what the patterns match against."""
+    if not patterns:
+        return ""
+    supertype_names = {
+        ref.supertype_simple_name
+        for ref in pf.type_refs
+        if ref.subtype_qualified_name == qualified_name
+    }
+    for name in supertype_names:
+        for suffix, kind in patterns.items():
+            if name.endswith(suffix):
+                return kind
+    return ""
+
+
 _ENTRYPOINTS_CONFIG_REL = Path(".repoweaver") / "entrypoints.yaml"
+
+_BUILTIN_ENTRY_POINT_PATTERNS: dict[str, str] = {
+    # Suffix/substring patterns on the *declared* supertype list. Empty by
+    # default in the public build — enterprise thrift/RPC and MQ frameworks
+    # use site-local naming (e.g. `implements XxxService.Iface`,
+    # `extends AbstractMessageProcessor<T>`), which a public tool must not
+    # guess. Sites configure theirs in entrypoints.yaml.
+}
 
 
 def load_entry_point_annotations(repo_root: Path) -> dict[str, str]:
@@ -109,6 +139,10 @@ def load_entry_point_annotations(repo_root: Path) -> dict[str, str]:
         annotations:
             MyController: HTTP_CONTROLLER
             MyBatchJob: SCHEDULED
+        implements_patterns:      # class implements a supertype whose simple name
+            Iface: RPC_PROVIDER   #   ends with this suffix -> entry kind
+        extends_patterns:         # class extends a base whose simple name
+            AbstractMessageProcessor: MESSAGE_LISTENER
 
     A missing, empty, or malformed config file silently falls back to the
     built-in table — entry-point detection must never crash a build over a
@@ -128,7 +162,7 @@ def load_entry_point_annotations(repo_root: Path) -> dict[str, str]:
 
     overrides = raw.get("annotations")
     if not isinstance(overrides, dict):
-        return dict(ENTRY_POINT_ANNOTATIONS)
+        overrides = {}
     overrides = {
         str(k): str(v) for k, v in overrides.items() if isinstance(k, str) and v
     }
@@ -138,6 +172,35 @@ def load_entry_point_annotations(repo_root: Path) -> dict[str, str]:
         return overrides
     merged = dict(ENTRY_POINT_ANNOTATIONS)
     merged.update(overrides)
+    return merged
+
+
+def load_entry_point_patterns(repo_root: Path) -> dict[str, str]:
+    """Implements/extends simple-name suffix patterns -> entry kind. Same
+    merge/replace semantics and same never-crash fallback as
+    load_entry_point_annotations. Both annotations and patterns can appear in
+    one file; this reads the pattern keys."""
+    config_path = Path(repo_root) / _ENTRYPOINTS_CONFIG_REL
+    if not config_path.exists():
+        return dict(_BUILTIN_ENTRY_POINT_PATTERNS)
+    try:
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    except (OSError, yaml.YAMLError):
+        return dict(_BUILTIN_ENTRY_POINT_PATTERNS)
+    if not isinstance(raw, dict):
+        return dict(_BUILTIN_ENTRY_POINT_PATTERNS)
+
+    def _collect(key: str) -> dict[str, str]:
+        section = raw.get(key)
+        if not isinstance(section, dict):
+            return {}
+        return {str(k): str(v) for k, v in section.items() if isinstance(k, str) and v}
+
+    if raw.get("mode") == "replace":
+        return _collect("implements_patterns") | _collect("extends_patterns")
+    merged = dict(_BUILTIN_ENTRY_POINT_PATTERNS)
+    merged.update(_collect("implements_patterns"))
+    merged.update(_collect("extends_patterns"))
     return merged
 
 
@@ -221,6 +284,7 @@ class Indexer:
         self.repo_root = Path(repo_root).resolve()
         self.store = store
         self.entry_point_annotations = load_entry_point_annotations(self.repo_root)
+        self.entry_point_patterns = load_entry_point_patterns(self.repo_root)
 
     def build(self) -> BuildStats:
         all_files = _discover_files(self.repo_root)
@@ -296,6 +360,10 @@ class Indexer:
             for rec in pf.nodes:
                 nid = node_id(rec.kind, self.repo_root, pf.file, rec.qualified_name)
                 kind = _entry_point_kind(rec.annotations, self.entry_point_annotations)
+                if not kind and rec.kind in _TYPE_KINDS_ENTRY:
+                    kind = _pattern_entry_kind(
+                        pf, rec.qualified_name, self.entry_point_patterns
+                    )
                 is_entry = bool(kind)
                 row = NodeRow(
                     id=nid,
@@ -410,6 +478,7 @@ __all__ = [
     "Indexer",
     "file_hash",
     "load_entry_point_annotations",
+    "load_entry_point_patterns",
     "node_id",
     "repo_slug",
 ]
