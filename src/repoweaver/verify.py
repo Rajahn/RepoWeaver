@@ -85,6 +85,7 @@ def run_verification(level: str, repo: Path) -> VerifyResult:
         "m3": _run_m3_verification,
         "query": _run_query_verification,
         "benchmark": _run_benchmark_verification,
+        "perf": _run_perf_verification,
     }
     runner = runners.get(level)
     if runner is None:
@@ -93,7 +94,7 @@ def run_verification(level: str, repo: Path) -> VerifyResult:
             [
                 (
                     f"Level '{level}' is not implemented. "
-                    "Supported: 'm1', 'm2', 'm3', 'query', 'benchmark'."
+                    "Supported: 'm1', 'm2', 'm3', 'query', 'benchmark', 'perf'."
                 )
             ],
         )
@@ -752,6 +753,126 @@ def _run_m2_verification() -> VerifyResult:
 
         report.append("-- entry-point detection --")
         _m2_entry_point_checks(repo_root, db_path, c)
+
+    return _finish(report, c)
+
+
+# ----------------------------------------------------------------------
+# perf — v0.5.0 parallel-parse + incremental-fast-path safety gate
+# ----------------------------------------------------------------------
+
+_PERF_FIXTURE_FILE_COUNT = 60  # > _PARALLEL_PARSE_THRESHOLD, enough to
+# exercise the worker pool without making the gate itself slow.
+
+
+def _generate_perf_fixture(root: Path, n: int) -> None:
+    pkg = root / "com" / "perf"
+    pkg.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        nxt = (i + 1) % n
+        (pkg / f"Gen{i}.java").write_text(
+            f"package com.perf;\n"
+            f"public class Gen{i} {{\n"
+            f"    public void run() {{ helper(); }}\n"
+            f"    public void helper() {{ new Gen{nxt}().run(); }}\n"
+            f"}}\n"
+        )
+
+
+def _perf_parallel_matches_serial_checks(repo_root: Path, c: _Check) -> None:
+    import repoweaver.indexer as indexer_mod
+    from repoweaver.benchmark.metrics import graph_signature
+
+    (repo_root / ".repoweaver").mkdir(parents=True, exist_ok=True)
+    db_parallel = repo_root / ".repoweaver" / "graph_parallel.db"
+    with GraphStore(db_parallel) as store:
+        Indexer(repo_root, store).build()
+        parallel_sig = graph_signature(store)
+
+    db_serial = repo_root / ".repoweaver" / "graph_serial.db"
+    original_threshold = indexer_mod._PARALLEL_PARSE_THRESHOLD
+    indexer_mod._PARALLEL_PARSE_THRESHOLD = 10**9  # force the inline (serial) path
+    try:
+        with GraphStore(db_serial) as store:
+            Indexer(repo_root, store).build()
+            serial_sig = graph_signature(store)
+    finally:
+        indexer_mod._PARALLEL_PARSE_THRESHOLD = original_threshold
+
+    c.check(
+        "parallel full build hash == serial full build hash",
+        parallel_sig == serial_sig,
+        f"{parallel_sig} != {serial_sig}",
+    )
+
+
+def _perf_incremental_sequence_checks(repo_root: Path, c: _Check) -> None:
+    import random
+    import time
+
+    from repoweaver.benchmark.metrics import graph_signature
+
+    db_path = repo_root / ".repoweaver" / "graph.db"
+    rng = random.Random(7)
+    files = sorted(
+        p.relative_to(repo_root).as_posix()
+        for p in (repo_root / "com" / "perf").glob("*.java")
+    )
+
+    n_steps = 5
+    elapsed_total = 0.0
+    all_match = True
+    for step in range(n_steps):
+        rel = rng.choice(files)
+        content = (repo_root / rel).read_text()
+        (repo_root / rel).write_text(content + f"    // touch {step}\n")
+
+        started = time.monotonic()
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build_incremental(
+                changed={rel}, deleted=set()
+            )
+            incremental_sig = graph_signature(store)
+        elapsed_total += time.monotonic() - started
+
+        full_db = repo_root / ".repoweaver" / f"graph_full_check_{step}.db"
+        with GraphStore(full_db) as store2:
+            Indexer(repo_root, store2).build()
+            full_sig = graph_signature(store2)
+        if incremental_sig != full_sig:
+            all_match = False
+
+    avg = elapsed_total / n_steps
+    c.check(
+        f"{n_steps}-step incremental watch sequence hash == full rebuild at every step",
+        all_match,
+    )
+    c.check(
+        f"incremental sync stays under a 2s/step CI budget (avg {avg:.3f}s)",
+        avg < 2.0,
+        f"avg={avg:.3f}s",
+    )
+
+
+def _run_perf_verification() -> VerifyResult:
+    """`fabric verify --level perf` — machine-verifies the v0.5.0 performance
+    work never trades correctness for speed: a parallel full build produces
+    a graph_signature() identical to a forced-serial one, and a simulated
+    watch sequence of incremental syncs stays hash-identical to a from-
+    scratch rebuild at every step, within a CI-safe latency budget. See
+    docs/adr/0005-incremental-symbol-table-and-parallel-parse.md."""
+    report: list[str] = ["RepoWeaver verify --level perf"]
+    c = _Check(report)
+
+    with tempfile.TemporaryDirectory(prefix="repoweaver-verify-perf-") as tmp:
+        repo_root = Path(tmp) / "perfrepo"
+        _generate_perf_fixture(repo_root, _PERF_FIXTURE_FILE_COUNT)
+
+        report.append("-- parallel build == serial build (P0-B) --")
+        _perf_parallel_matches_serial_checks(repo_root, c)
+
+        report.append("-- incremental watch sequence latency + consistency (P0-A) --")
+        _perf_incremental_sequence_checks(repo_root, c)
 
     return _finish(report, c)
 

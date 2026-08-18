@@ -1,5 +1,77 @@
 # Changelog
 
+## v0.5.0 — Incremental sync + parallel parse (P0 perf)
+
+`Indexer._sync` used to rebuild everything from scratch on every build/watch
+batch: deserialize every cached `ParsedFile`, rebuild the whole `SymbolTable`,
+and re-resolve every file, even for a one-line edit. This release adds a
+fast incremental path plus a parallel parse stage for full builds. See
+[ADR-0005](docs/adr/0005-incremental-sync-and-parallel-parse.md).
+
+### Added
+
+- **Incremental fast path (`Indexer.build_incremental`)**: for a changed-file
+  batch with no deletions, re-parses only the changed files, and takes a
+  cheap, provably-safe shortcut — skip full `SymbolTable`/resolve for the
+  rest of the repo — whenever (a) every changed file's node identity
+  (`kind`, `qualified_name`, `simple_name`, `signature`) is unchanged from
+  what's stored, and (b) the freshly-resolved EXTENDS/IMPLEMENTS
+  edges/unresolved-references for those files match what's already stored.
+  Both conditions together prove the repo-wide `SymbolTable` and supertypes
+  map are unchanged, so only the changed files need re-resolving. Any
+  violation (new/renamed symbol, signature change, supertype change,
+  new cross-file ambiguity, or any deletion) escalates to the existing
+  full resolve — never a partial, unsafe result.
+- **Parallel parsing (P0-B)**: full builds parse files with a
+  `ProcessPoolExecutor` (capped at `min(8, os.cpu_count())`) once a batch is
+  large enough (`>= 24` files) to amortize pool startup; resolve and all
+  store writes stay single-threaded (SQLite is single-writer). Parsing has
+  no shared state across files, so this changes nothing about resolution.
+- **`fabric verify --level perf`**: asserts parallel and serial full builds
+  hash-identical, and that a simulated incremental watch sequence matches a
+  full rebuild's `graph_signature` at every step while staying under a
+  2s/step CI budget.
+- New `incremental_sync_sec` benchmark metric: cost of a `build_incremental`
+  sync for one already-indexed file, following the same build used for every
+  other metric.
+- `tests/test_incremental_fast_path.py`: the correctness anchor for the fast
+  path, including a 12-step randomized watch-sequence simulation asserting
+  hash-identity with a from-scratch rebuild at every step.
+
+### Fixed
+
+- `GraphStore.replace_file_nodes` / `replace_file_edges` /
+  `replace_file_unresolved` now batch their per-row `INSERT`/`DELETE`
+  statements with `executemany` instead of one `execute()` call per row —
+  cut a full 884-file build's SQLite `execute()` call count from ~114.5k to
+  ~6.2k with no change to the rows written.
+- `_parsed_file_to_json` used `dataclasses.asdict()` (which deep-copies
+  every field) to serialize `file_refs_cache` rows; since every dataclass it
+  serializes here is flat (no nested dataclasses), switched to a shallow
+  `vars()` dict with identical output and no deepcopy cost.
+
+### Performance (measured on a real 884-file / 16.7k-node Java repo)
+
+| Metric | Before | After |
+|---|---|---|
+| Full build (884 files) | 11.9s | ~10.3s |
+| Single-file incremental sync | 1.29s+ (full rebuild) | 0.36s |
+| 20-file batch incremental sync | 1.29s+ (full rebuild) | 0.61s |
+
+The single-file (<400ms) and 20-file-batch incremental targets are met, and
+both are confirmed byte-identical to a full rebuild's `graph_signature`. The
+full-build target (<6s) is **not** met: profiling traced the full-build cost
+to per-file SQLite write volume and `file_refs_cache` serialization, not
+parsing (tree-sitter parse of all 884 files is ~1.6-1.7s serial, and the
+`ProcessPoolExecutor` pool's IPC/future-wait overhead ate most of the gain
+parallelizing it). The SQL batching and serialization fixes above are a
+genuine improvement (11.9s → ~10.3s) but do not close the remaining gap; a
+further pass on the write path (e.g. a single multi-file transaction API
+instead of per-file `replace_file_*` calls) is needed to reach <6s.
+Coverage/ambiguity metrics on the pinned `google/gson` core benchmark are
+unchanged (`edges_ambiguous=153`, `ambiguous_edge_rate=0.0636`,
+`cross_file_dependent_coverage=0.9012`, all matching `v0.2.0-gson-core`).
+
 ## v0.4.0 — Query facade (M4-0)
 
 A real-repo validation pass found the graph engine itself was solid but the

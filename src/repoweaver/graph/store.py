@@ -213,8 +213,8 @@ class GraphStore:
                 "DELETE FROM node WHERE id = ?", [(nid,) for nid in removed]
             )
 
-        for n in nodes:
-            self.conn.execute(
+        if nodes:
+            self.conn.executemany(
                 """
                 INSERT INTO node (
                     id, kind, language, repo, file, span_start, span_end,
@@ -229,22 +229,25 @@ class GraphStore:
                     indexed_at=excluded.indexed_at, is_entry_point=excluded.is_entry_point,
                     entry_point_kind=excluded.entry_point_kind
                 """,
-                (
-                    n.id,
-                    n.kind,
-                    n.language,
-                    n.repo,
-                    n.file,
-                    n.span_start,
-                    n.span_end,
-                    n.qualified_name,
-                    n.simple_name,
-                    n.signature,
-                    n.commit_hash,
-                    n.indexed_at,
-                    int(n.is_entry_point),
-                    n.entry_point_kind,
-                ),
+                [
+                    (
+                        n.id,
+                        n.kind,
+                        n.language,
+                        n.repo,
+                        n.file,
+                        n.span_start,
+                        n.span_end,
+                        n.qualified_name,
+                        n.simple_name,
+                        n.signature,
+                        n.commit_hash,
+                        n.indexed_at,
+                        int(n.is_entry_point),
+                        n.entry_point_kind,
+                    )
+                    for n in nodes
+                ],
             )
 
     def replace_file_edges(
@@ -272,9 +275,8 @@ class GraphStore:
                 merged[eid] = e
 
         now = int(time.time())
-        for eid, e in merged.items():
-            candidates = sorted(candidates_by_id[eid])
-            self.conn.execute(
+        if merged:
+            self.conn.executemany(
                 """
                 INSERT INTO edge (id, from_id, to_id, type, provenance, confidence,
                                    observed_at, source_hash, ambiguous_candidates)
@@ -283,30 +285,35 @@ class GraphStore:
                     confidence=excluded.confidence, observed_at=excluded.observed_at,
                     source_hash=excluded.source_hash, ambiguous_candidates=excluded.ambiguous_candidates
                 """,
-                (
-                    eid,
-                    e.from_id,
-                    e.to_id,
-                    e.type,
-                    e.provenance,
-                    e.confidence,
-                    now,
-                    e.source_hash,
-                    json.dumps(candidates),
-                ),
+                [
+                    (
+                        eid,
+                        e.from_id,
+                        e.to_id,
+                        e.type,
+                        e.provenance,
+                        e.confidence,
+                        now,
+                        e.source_hash,
+                        json.dumps(sorted(candidates_by_id[eid])),
+                    )
+                    for eid, e in merged.items()
+                ],
             )
-            self.conn.execute("DELETE FROM evidence WHERE edge_id = ?", (eid,))
-            # The parser may emit the same resolved edge more than once on one
-            # source line (for example chained calls). Evidence is a source
-            # location, so identical (file, line) sites are deliberately
-            # deduplicated rather than assigned synthetic identities.
+            self.conn.executemany(
+                "DELETE FROM evidence WHERE edge_id = ?",
+                [(eid,) for eid in merged],
+            )
+
+        # The parser may emit the same resolved edge more than once on one
+        # source line (for example chained calls). Evidence is a source
+        # location, so identical (file, line) sites are deliberately
+        # deduplicated rather than assigned synthetic identities.
+        evidence_rows = []
+        for eid in merged:
+            candidates = candidates_by_id[eid]
             for site_file, line in sorted(set(sites[eid])):
-                self.conn.execute(
-                    """
-                    INSERT INTO evidence (id, edge_id, file, line, parser_version,
-                                           freshness_ts, verification_status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
+                evidence_rows.append(
                     (
                         evidence_id(eid, site_file, line),
                         eid,
@@ -315,8 +322,17 @@ class GraphStore:
                         parser_version,
                         now,
                         "ambiguous" if candidates else "verified",
-                    ),
+                    )
                 )
+        if evidence_rows:
+            self.conn.executemany(
+                """
+                INSERT INTO evidence (id, edge_id, file, line, parser_version,
+                                       freshness_ts, verification_status)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                evidence_rows,
+            )
 
     def replace_file_unresolved(
         self, file: str, refs: list[UnresolvedReferenceRow]
@@ -345,11 +361,27 @@ class GraphStore:
             merged[rid] = r
 
         now = int(time.time())
-        for rid, r in merged.items():
-            candidates = sorted(candidates_by_id[rid])
-            sites = sorted(sites_by_id[rid])
-            first_file, first_line = sites[0]
-            self.conn.execute(
+        if merged:
+            rows = []
+            for rid, r in merged.items():
+                candidates = sorted(candidates_by_id[rid])
+                sites = sorted(sites_by_id[rid])
+                first_file, first_line = sites[0]
+                rows.append(
+                    (
+                        rid,
+                        r.from_id,
+                        r.type,
+                        r.target_name,
+                        json.dumps(candidates),
+                        r.reason,
+                        first_file,
+                        first_line,
+                        len(sites),
+                        now,
+                    )
+                )
+            self.conn.executemany(
                 """
                 INSERT INTO unresolved_reference
                     (id, from_id, type, target_name, candidates, reason,
@@ -360,18 +392,7 @@ class GraphStore:
                     file=excluded.file, line=excluded.line,
                     site_count=excluded.site_count, observed_at=excluded.observed_at
                 """,
-                (
-                    rid,
-                    r.from_id,
-                    r.type,
-                    r.target_name,
-                    json.dumps(candidates),
-                    r.reason,
-                    first_file,
-                    first_line,
-                    len(sites),
-                    now,
-                ),
+                rows,
             )
 
     def unresolved_count(self) -> int:

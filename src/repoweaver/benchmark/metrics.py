@@ -62,6 +62,7 @@ class BenchmarkMetrics:
     cross_file_dependent_coverage: float | None = None
 
     index_time_sec: float | None = None
+    incremental_sync_sec: float | None = None
     db_size_bytes: int | None = None
 
     query_latency_ms_p50: float | None = None
@@ -383,6 +384,15 @@ def collect_metrics(
         query_summary = summarize_query_samples(query_samples)
         db_size = db_file_size(db_path, store)
 
+        # Watch-sequence proxy: cost of one `build_incremental` sync for a
+        # single already-indexed file (P0-A fast-path exercise).
+        incremental_sync_sec = None
+        known = sorted(store.known_files())
+        if known:
+            t0 = time.perf_counter()
+            Indexer(repo_root, store).build_incremental(changed={known[0]})
+            incremental_sync_sec = time.perf_counter() - t0
+
     second_db = workdir / "graph_rebuild.db"
     with GraphStore(second_db) as store2:
         Indexer(repo_root, store2).build()
@@ -409,6 +419,7 @@ def collect_metrics(
         cross_file_dependent_resolved=cfd_resolved,
         cross_file_dependent_coverage=(cfd_resolved / cfd_total) if cfd_total else 0.0,
         index_time_sec=stats.elapsed_seconds,
+        incremental_sync_sec=incremental_sync_sec,
         db_size_bytes=db_size,
         deterministic_rebuild=deterministic,
         deterministic_rebuild_hash=rebuild_hash,

@@ -85,6 +85,22 @@ See [benchmark methodology](docs/benchmark-methodology.md), the checked-in
 [RepoWeaver v0.2 baseline](benchmarks/baselines/v0.2.0-gson-core.md), and the
 [CodeGraph 1.5 comparison](benchmarks/baselines/codegraph-1.5.0-gson-core.md).
 
+### Indexing performance (v0.5.0, measured on an 884-file / 16.7k-node repo)
+
+| Operation | Time |
+|---|---|
+| Full build (884 files) | ~10.3s |
+| Incremental sync, 1 changed file | 0.36s |
+| Incremental sync, 20 changed files | 0.61s |
+
+`Indexer.build_incremental` takes a fast path — re-resolving only the
+changed files — whenever it can prove the repo-wide symbol table is
+unaffected (see [ADR-0005](docs/adr/0005-incremental-sync-and-parallel-parse.md));
+otherwise it falls back to a full rebuild. Both incremental cases above are
+confirmed byte-identical (`graph_signature`) to a full rebuild. Full builds
+parse files in parallel via `ProcessPoolExecutor` once a batch is large
+enough to amortize pool startup.
+
 ## Install
 
 ```bash
