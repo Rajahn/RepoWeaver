@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "repoweaver"
-version = "0.2.0"
+version = "0.3.0"
 description = "Code context fabric for AI coding agents — deterministic call-graph indexing, hybrid retrieval, and single-tool MCP interface"
 readme = "README.md"
 requires-python = ">=3.11"

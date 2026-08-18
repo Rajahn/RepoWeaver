@@ -1,6 +1,6 @@
-# Schema v1.1 — RepoWeaver Evidence Graph
+# Schema v1.2 — RepoWeaver Evidence Graph
 
-> Status: **FROZEN v1.1** (2026-08-18) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md) and [ADR-0002](adr/0002-m2-resolution-and-freshness.md)
+> Status: **FROZEN v1.2** (2026-08-18) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md), [ADR-0002](adr/0002-m2-resolution-and-freshness.md) and [ADR-0003](adr/0003-typed-overlay.md)
 > Rule: once frozen, all downstream tables/queries must migrate in place; no silent drops.
 
 ---
@@ -112,13 +112,26 @@ CREATE INDEX edge_type ON edge(type);
 | type | meaning | default confidence |
 |------|---------|--------------------|
 | `CALLS` | method A calls method B (textual resolution) | 0.70 |
-| `CALLS_TYPED` | A calls B (type-resolved via SCIP/jdtls, M3) | 0.95 |
+| `CALLS_TYPED` | A calls B, backed by a compiler-derived SCIP occurrence (M3) | 0.95 |
 | `IMPORTS` | file A imports symbol B (including static-import owner types) | 1.00 |
 | `REFERENCES` | a signature/body/annotation uses a uniquely resolved type | 0.95 |
+| `REFERENCES_TYPED` | as `REFERENCES`, backed by a SCIP occurrence (M3) | 0.95 |
 | `EXTENDS` | class A extends class B | 1.00 |
+| `EXTENDS_TYPED` | as `EXTENDS`, backed by a SCIP occurrence (M3) | 1.00 |
 | `IMPLEMENTS` | class A implements interface B | 1.00 |
+| `IMPLEMENTS_TYPED` | as `IMPLEMENTS`, backed by a SCIP occurrence (M3) | 1.00 |
 | `ROUTES_TO` | framework route → handler (Spring MVC, etc.) | 0.80 |
 | `RUNTIME_CALLS` | observed in OTel/Jaeger trace (M4) | 1.00 |
+
+**Typed overlay merge (M3, ADR-0003).** `fabric overlay scip` never adds a
+duplicate edge for a pair the textual resolver already found: it upgrades
+the existing `CALLS`/`REFERENCES`/`EXTENDS`/`IMPLEMENTS` row in place to its
+`*_TYPED` counterpart (same `from_id`/`to_id`, new `type` and therefore new
+`id`, since `edge.id` is derived from `(from_id, to_id, type)`), carrying
+both sides' `evidence` rows forward and setting
+`provenance = "scip_java+tree_sitter_java"`. A SCIP occurrence with no
+matching textual edge is inserted directly as `provenance = "scip_java"`.
+No edge is ever dropped by this merge.
 
 **Entry points (v1.1).** Entry-ness is a node property, never a self-loop.
 `is_entry_point` and `entry_point_kind` are populated from recognized HTTP,
@@ -132,8 +145,9 @@ symbols without pretending static analysis knows their runtime callers.
 | value | meaning |
 |-------|---------|
 | `tree_sitter_java` | extracted by tree-sitter Java grammar |
-| `scip_java` | extracted from scip-java index (M3) |
-| `jdtls` | extracted from jdtls LSP response (M3) |
+| `scip_java` | extracted from a scip-java SCIP index, no matching textual edge existed (M3) |
+| `scip_java+tree_sitter_java` | a textual edge was upgraded by a matching SCIP occurrence (M3) |
+| `jdtls` | extracted from jdtls LSP response (future milestone; not implemented) |
 | `otel_trace` | observed in OpenTelemetry trace (M4) |
 | `rule_entry_point` | matched by annotation/pattern rule (M2) |
 
@@ -227,3 +241,4 @@ Static analysis over this schema CANNOT represent:
 | v1 | 2026-08-17 | initial draft |
 | v1 (frozen) | 2026-08-17 | FTS5 triggers, cascade-safe replace-by-file, file freshness. See ADR-0001. |
 | v1.1 (frozen) | 2026-08-18 | Additive entry-point columns, `unresolved_reference`, `file_refs_cache`, `REFERENCES`, annotation symbols and parse-incremental/global-resolution semantics. See ADR-0002. |
+| v1.2 (frozen) | 2026-08-18 | Additive `edge.type`/`provenance` values for the SCIP typed overlay: `CALLS_TYPED`, `REFERENCES_TYPED`, `EXTENDS_TYPED`, `IMPLEMENTS_TYPED`, `scip_java`, `scip_java+tree_sitter_java`. No column or constraint changes. See ADR-0003. |

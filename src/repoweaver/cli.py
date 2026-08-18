@@ -11,6 +11,7 @@ from repoweaver.benchmark.cli import app as benchmark_app
 from repoweaver.graph.store import GraphStore
 from repoweaver.indexer import Indexer
 from repoweaver.protocol import inject_agents_md
+from repoweaver.typed.cli import app as overlay_app
 
 app = typer.Typer(
     name="fabric",
@@ -19,6 +20,7 @@ app = typer.Typer(
 )
 
 app.add_typer(benchmark_app, name="benchmark")
+app.add_typer(overlay_app, name="overlay")
 
 
 def _db_path(repo_root: Path) -> Path:

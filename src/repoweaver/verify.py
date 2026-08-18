@@ -59,11 +59,16 @@ def run_verification(level: str, repo: Path) -> VerifyResult:
         return _run_benchmark_verification()
     if level == "m2":
         return _run_m2_verification()
+    if level == "m3":
+        return _run_m3_verification()
     if level != "m1":
         return VerifyResult(
             False,
             [
-                f"Level '{level}' is not implemented. Supported: 'm1', 'm2', 'benchmark'."
+                (
+                    f"Level '{level}' is not implemented. "
+                    "Supported: 'm1', 'm2', 'm3', 'benchmark'."
+                )
             ],
         )
 
@@ -507,6 +512,147 @@ def _run_m2_verification() -> VerifyResult:
             "annotated method flagged as HTTP_ROUTE entry point",
             bool(node["is_entry_point"]) and node["entry_point_kind"] == "HTTP_ROUTE",
             str(node),
+        )
+
+    passed = c.failures == 0
+    report.append("")
+    report.append("PASS" if passed else f"FAIL ({c.failures} check(s) failed)")
+    return VerifyResult(passed, report)
+
+
+_M3_FIXTURE = _PROJECT_ROOT / "tests" / "fixtures" / "m3typed"
+
+
+def _run_m3_verification() -> VerifyResult:
+    """`fabric verify --level m3` — machine-verifies the SCIP typed-overlay
+    guarantees against the bundled m3typed fixture: interface-typed calls
+    land precisely on the interface method (not an implementation),
+    same-arity overloads are distinguished by argument type, merging typed
+    with textual edges loses no edges, repeated overlay runs are idempotent,
+    and the resulting graph hash is deterministic."""
+    import shutil
+    import tempfile
+
+    from repoweaver.benchmark.metrics import graph_signature
+    from repoweaver.graph.store import edge_id
+    from repoweaver.typed.overlay import run_overlay
+
+    report: list[str] = ["RepoWeaver verify --level m3"]
+    c = _Check(report)
+
+    if not _M3_FIXTURE.exists() or not (_M3_FIXTURE / "index.scip").exists():
+        c.check("m3typed fixture + index.scip present", False, str(_M3_FIXTURE))
+        report.append("FAIL — cannot continue without fixture")
+        return VerifyResult(False, report)
+
+    with tempfile.TemporaryDirectory(prefix="repoweaver-verify-m3-") as tmp:
+        repo_root = Path(tmp) / "m3typed"
+        shutil.copytree(_M3_FIXTURE, repo_root)
+        db_path = repo_root / ".repoweaver" / "graph.db"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+        with GraphStore(db_path) as store:
+            Indexer(repo_root, store).build()
+            edges_before = store.conn.execute("SELECT COUNT(*) FROM edge").fetchone()[0]
+
+        report.append("-- overlay merge --")
+        stats = run_overlay(repo_root, repo_root / "index.scip")
+        c.check(
+            "every SCIP reference in the fixture mapped (never guessed)",
+            stats.unmapped_symbols == 0 and stats.mapped == stats.typed_refs,
+            str(stats.as_dict()),
+        )
+
+        with GraphStore(db_path) as store:
+            pkg = "com.example.m3typed"
+            dispatch_id = store.find_by_qualified_name(f"{pkg}.Caller#dispatch(Shape)")[
+                0
+            ]["id"]
+            shape_area_id = store.find_by_qualified_name(f"{pkg}.Shape#area()")[0]["id"]
+            circle_area_id = store.find_by_qualified_name(f"{pkg}.Circle#area()")[0][
+                "id"
+            ]
+            run_id = store.find_by_qualified_name(f"{pkg}.Caller#run()")[0]["id"]
+            process_int_id = store.find_by_qualified_name(f"{pkg}.Caller#process(int)")[
+                0
+            ]["id"]
+            process_str_id = store.find_by_qualified_name(
+                f"{pkg}.Caller#process(String)"
+            )[0]["id"]
+
+            report.append("-- interface dispatch precision --")
+            typed_to_interface = store.conn.execute(
+                "SELECT id FROM edge WHERE id = ?",
+                (edge_id(dispatch_id, shape_area_id, "CALLS_TYPED"),),
+            ).fetchone()
+            typed_to_impl = store.conn.execute(
+                "SELECT id FROM edge WHERE from_id = ? AND to_id = ?",
+                (dispatch_id, circle_area_id),
+            ).fetchone()
+            c.check(
+                "typed call from dispatch() lands on Shape#area()",
+                typed_to_interface is not None,
+            )
+            c.check(
+                "typed call does NOT land on Circle#area() (the implementation)",
+                typed_to_impl is None,
+            )
+
+            report.append("-- overload disambiguation --")
+            int_edge = store.conn.execute(
+                "SELECT id FROM edge WHERE id = ?",
+                (edge_id(run_id, process_int_id, "CALLS_TYPED"),),
+            ).fetchone()
+            str_edge = store.conn.execute(
+                "SELECT id FROM edge WHERE id = ?",
+                (edge_id(run_id, process_str_id, "CALLS_TYPED"),),
+            ).fetchone()
+            c.check(
+                "process(int) and process(String) resolve to distinct typed edges",
+                int_edge is not None
+                and str_edge is not None
+                and int_edge["id"] != str_edge["id"],
+            )
+
+            report.append("-- lossless merge --")
+            edges_after = store.conn.execute("SELECT COUNT(*) FROM edge").fetchone()[0]
+            c.check(
+                "merging typed + textual edges drops no edges",
+                edges_after >= edges_before,
+                f"before={edges_before} after={edges_after}",
+            )
+            merged_typed = store.conn.execute(
+                "SELECT COUNT(*) FROM edge WHERE type LIKE '%_TYPED' "
+                "AND provenance = 'scip_java+tree_sitter_java'"
+            ).fetchone()[0]
+            c.check(
+                "at least one edge upgraded via merge (both provenances kept)",
+                merged_typed >= 1,
+                str(merged_typed),
+            )
+
+            sig_before_rerun = graph_signature(store)
+
+        report.append("-- idempotency & determinism --")
+        stats2 = run_overlay(repo_root, repo_root / "index.scip")
+        with GraphStore(db_path) as store:
+            sig_after_rerun = graph_signature(store)
+            edge_count_after_rerun = store.conn.execute(
+                "SELECT COUNT(*) FROM edge"
+            ).fetchone()[0]
+        c.check(
+            "repeated overlay run reports identical stats",
+            stats.as_dict() == stats2.as_dict(),
+            f"{stats.as_dict()} != {stats2.as_dict()}",
+        )
+        c.check(
+            "repeated overlay run does not change edge count",
+            edge_count_after_rerun == edges_after,
+            f"{edge_count_after_rerun} != {edges_after}",
+        )
+        c.check(
+            "graph_signature is stable across repeated overlay runs",
+            sig_before_rerun == sig_after_rerun,
+            f"{sig_before_rerun} != {sig_after_rerun}",
         )
 
     passed = c.failures == 0

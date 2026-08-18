@@ -35,5 +35,8 @@ jobs:
       - name: M2 freshness and consistency gate
         run: fabric verify --level m2
 
+      - name: M3 typed overlay gate
+        run: fabric verify --level m3
+
       - name: Public-source leak scan
         run: python scripts/check_public.py

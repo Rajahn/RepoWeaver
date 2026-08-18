@@ -170,3 +170,4 @@ No gaps. Contract covers all five command shapes.
 | v1 | 2026-08-17 | initial draft |
 | v1 (frozen) | 2026-08-17 | M1 response and four task modes. See ADR-0001. |
 | v1.1 (frozen) | 2026-08-18 | Backward-compatible slice entry-point metadata; graph traversal may include `REFERENCES`; ambiguous references remain outside resolved edges. See ADR-0002. |
+| v1.1 (unchanged) | 2026-08-18 | M3 typed overlay (ADR-0003) needs no contract bump: `edge_type`/`provenance` are already free-text strings, so slices may now surface `CALLS_TYPED`/`REFERENCES_TYPED`/`EXTENDS_TYPED`/`IMPLEMENTS_TYPED` and `scip_java`/`scip_java+tree_sitter_java` values without any new field or schema change on the response side. |

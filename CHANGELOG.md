@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.3.0 — M3 (Type-precision overlay)
+
+### Added
+
+- `src/repoweaver/typed/`: a dependency-free SCIP pipeline —
+  `scip_proto.py` (hand-rolled protobuf wire decoder for `scip.proto`'s
+  Index/Document/Occurrence/SymbolInformation messages), `scip_index.py`
+  (flattens occurrences into caller/target reference tuples via
+  enclosing-range scope nesting), `symbol_map.py` (SCIP symbol → RepoWeaver
+  `qualified_name`, including JVM-descriptor overload alignment; unmappable
+  symbols are recorded as skipped, never guessed), `overlay.py` (merge/CLI
+  entry point).
+- `fabric overlay scip --repo . --index path/to/index.scip [--dry-run]`:
+  merges typed references into the graph as `CALLS_TYPED`/
+  `REFERENCES_TYPED`/`EXTENDS_TYPED`/`IMPLEMENTS_TYPED` edges (confidence
+  0.95, provenance `scip_java`), upgrading a matching existing textual edge
+  in place (provenance `scip_java+tree_sitter_java`) rather than duplicating
+  it. Never drops an edge. Idempotent and deterministic across repeated runs.
+- `tests/fixtures/m3typed`: interface + two implementations, same-name
+  overloads distinguished by parameter type, and a generic method — used by
+  both the pytest suite and `fabric verify --level m3`.
+- `scripts/build_scip_fixture.sh` / `scripts/gen_deterministic_scip_fixture.py`:
+  build the fixture's `index.scip`, preferring a real `scip-java` binary
+  (via `SCIP_JAVA_BIN`/`PATH`, never a hardcoded download URL) and falling
+  back to a hand-encoded deterministic wire-format generator.
+- `fabric verify --level m3`: interface-typed dispatch precision, overload
+  disambiguation, lossless typed/textual merge, idempotency and
+  graph-signature determinism — wired into CI and `make verify-m3`.
+- ADR-0003 and additive schema v1.2 (`edge.type`/`provenance` new values
+  only — no column/constraint changes; `explore()` contract stays v1.1).
+
+### Remaining limitations
+
+- The bundled `tests/fixtures/m3typed/index.scip` is produced by the
+  deterministic generator, not a real `scip-java` run — this session could
+  not complete a `scip-java` binary download or a from-scratch Maven
+  `semanticdb-javac` build within a reasonable time (see
+  `docs/adr/0003-typed-overlay.md` §9). The decoder/mapper/merge pipeline
+  itself is validated against real scip.proto wire bytes either way.
+- A Gson-scale before/after overlay benchmark was not completed for the same
+  reason; see `benchmarks/baselines/v0.3.0-gson-core-typed-overlay.md`
+  (status `SKIP`). `v0.2.0-gson-core` remains the current measured baseline.
+- Overload alignment via JVM disambiguator only matches non-generic
+  parameter types precisely; a method that is both generic and overloaded
+  falls back to `ambiguous_overload_unaligned` rather than a guess.
+- Java only.
+
 ## v0.2.0 — M2 (Resolution, references and freshness)
 
 ### Added

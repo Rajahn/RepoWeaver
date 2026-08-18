@@ -1,4 +1,4 @@
-.PHONY: verify-p0 verify-m1 verify-m2 verify-benchmark ci baseline install
+.PHONY: verify-p0 verify-m1 verify-m2 verify-m3 verify-benchmark ci baseline install
 
 install:
 	uv sync --extra dev
@@ -17,9 +17,12 @@ verify-m1: install
 verify-m2: install
 	uv run fabric verify --level m2
 
+verify-m3: install
+	uv run fabric verify --level m3
+
 verify-benchmark: install
 	uv run fabric verify --level benchmark
 
-ci: verify-m1 verify-m2 verify-benchmark
+ci: verify-m1 verify-m2 verify-m3 verify-benchmark
 
 baseline: verify-benchmark
