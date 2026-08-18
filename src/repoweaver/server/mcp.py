@@ -73,3 +73,49 @@ if "reindex" in _extra_tools:
         with GraphStore(db_path) as store:
             stats = Indexer(Path(repo).resolve(), store).build()
             return {"files": stats.files, "nodes": stats.nodes, "edges": stats.edges}
+
+
+if "debug_graph" in _extra_tools:
+
+    @mcp.tool()
+    def debug_graph(symbol: str, repo: str = ".") -> dict:
+        """Raw node/edge dump for a symbol — diagnosis only, not part of the
+        explore() contract. No ranking, no trimming, no blind_spots."""
+        from repoweaver.explore import db_path_for
+        from repoweaver.graph.store import GraphStore
+
+        db_path = db_path_for(repo)
+        if not db_path.exists():
+            return {"error": "not_indexed", "hint": "run: fabric build"}
+
+        with GraphStore(db_path) as store:
+            nodes = store.find_by_qualified_name(symbol) or store.find_by_simple_name(
+                symbol
+            )
+            dumped = []
+            for node in nodes:
+                node_id = node["id"]
+                outgoing = store.conn.execute(
+                    "SELECT to_id, type, confidence, provenance, ambiguous_candidates "
+                    "FROM edge WHERE from_id = ? ORDER BY to_id, type",
+                    (node_id,),
+                ).fetchall()
+                incoming = store.conn.execute(
+                    "SELECT from_id, type, confidence, provenance, ambiguous_candidates "
+                    "FROM edge WHERE to_id = ? ORDER BY from_id, type",
+                    (node_id,),
+                ).fetchall()
+                unresolved = store.conn.execute(
+                    "SELECT type, target_name, candidates, reason, site_count "
+                    "FROM unresolved_reference WHERE from_id = ? ORDER BY type, target_name",
+                    (node_id,),
+                ).fetchall()
+                dumped.append(
+                    {
+                        "node": node,
+                        "outgoing_edges": [dict(r) for r in outgoing],
+                        "incoming_edges": [dict(r) for r in incoming],
+                        "ambiguous_candidates": [dict(r) for r in unresolved],
+                    }
+                )
+            return {"symbol": symbol, "nodes": dumped}

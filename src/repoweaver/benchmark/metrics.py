@@ -10,6 +10,7 @@ the confidence bar or keeping ambiguous candidates in the denominator.
 from __future__ import annotations
 
 import json
+import statistics
 import time
 from collections.abc import Iterable
 from dataclasses import asdict, dataclass
@@ -322,11 +323,8 @@ def _percentile(values: list[float], pct: float) -> float | None:
     ordered = sorted(values)
     if len(ordered) == 1:
         return ordered[0]
-    k = (len(ordered) - 1) * pct
-    lo, hi = int(k), min(int(k) + 1, len(ordered) - 1)
-    if lo == hi:
-        return ordered[lo]
-    return ordered[lo] + (ordered[hi] - ordered[lo]) * (k - lo)
+    idx = round(pct * 100) - 1
+    return statistics.quantiles(ordered, n=100, method="inclusive")[idx]
 
 
 def summarize_query_samples(samples: list[QuerySample]) -> dict:

@@ -9,6 +9,7 @@ import typer
 
 from repoweaver import __version__
 from repoweaver.benchmark.cli import app as benchmark_app
+from repoweaver.cli_errors import exit_on_locked_db
 from repoweaver.graph.store import GraphStore
 from repoweaver.indexer import Indexer
 from repoweaver.protocol import inject_agents_md
@@ -28,15 +29,6 @@ def _db_path(repo_root: Path) -> Path:
     return repo_root / ".repoweaver" / "graph.db"
 
 
-def _exit_on_locked_db(db_path: Path, exc: sqlite3.OperationalError) -> None:
-    print(
-        f"error: could not access {db_path} ({exc}). "
-        "Another `fabric build`/`fabric watch` process is likely holding a "
-        "lock on it — wait for it to finish, or stop it, then retry."
-    )
-    raise typer.Exit(code=1)
-
-
 @app.command()
 def build(
     repo: str = typer.Argument(".", help="Path to the repository root."),
@@ -50,7 +42,7 @@ def build(
         with GraphStore(db_path) as store:
             stats = Indexer(repo_root, store).build()
     except sqlite3.OperationalError as exc:
-        _exit_on_locked_db(db_path, exc)
+        exit_on_locked_db(db_path, exc)
         return
 
     print(
@@ -152,7 +144,7 @@ def watch(
             except KeyboardInterrupt:
                 print("Stopped.")
     except sqlite3.OperationalError as exc:
-        _exit_on_locked_db(db_path, exc)
+        exit_on_locked_db(db_path, exc)
 
 
 @app.command()

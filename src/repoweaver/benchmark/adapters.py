@@ -20,25 +20,12 @@ import subprocess
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
 
 from repoweaver.benchmark.metrics import BenchmarkMetrics, collect_metrics
 
 
 class AdapterSkipped(Exception):
     """Raised when an adapter's tool is not available; the run is SKIP, not FAIL."""
-
-
-class BenchmarkAdapter(Protocol):
-    name: str
-
-    def run(
-        self,
-        repo_root: Path,
-        name: str,
-        workdir: Path,
-        scope_prefixes: list[str] | None = None,
-    ) -> BenchmarkMetrics: ...
 
 
 @dataclass
@@ -231,7 +218,15 @@ ADAPTERS: dict[str, type] = {
 }
 
 
-def build_adapter(spec: str) -> BenchmarkAdapter:
+def build_adapter(
+    spec: str,
+) -> (
+    RepoWeaverAdapter
+    | ExternalCommandAdapter
+    | CodeGraphAdapter
+    | GraftAdapter
+    | GrepBaselineAdapter
+):
     """`spec` is an adapter name ("repoweaver", "grep", "codegraph", "graft")
     or "external:<shell command template>" for ExternalCommandAdapter."""
     if spec.startswith("external:"):
@@ -247,7 +242,6 @@ def build_adapter(spec: str) -> BenchmarkAdapter:
 __all__ = [
     "ADAPTERS",
     "AdapterSkipped",
-    "BenchmarkAdapter",
     "CodeGraphAdapter",
     "ExternalCommandAdapter",
     "GraftAdapter",

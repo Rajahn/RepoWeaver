@@ -8,6 +8,7 @@ from pathlib import Path
 
 import typer
 
+from repoweaver.cli_errors import exit_on_locked_db
 from repoweaver.typed.overlay import run_overlay
 
 app = typer.Typer(
@@ -35,10 +36,5 @@ def scip(
         print(f"error: could not read SCIP index {index_path} — {exc}")
         raise typer.Exit(code=1) from None
     except sqlite3.OperationalError as exc:
-        print(
-            f"error: could not access {db_path} ({exc}). "
-            "Another `fabric build`/`fabric watch` process is likely holding "
-            "a lock on it — wait for it to finish, or stop it, then retry."
-        )
-        raise typer.Exit(code=1) from None
+        exit_on_locked_db(db_path, exc)
     print(json.dumps(stats.as_dict(), indent=2, sort_keys=True))

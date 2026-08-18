@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.3.2 — Cross-audit clean-up
+
+Two independent v0.3.1 audits were cross-checked against each other; the
+three findings both flagged as clear cuts (PROVE-CUT) are applied here,
+along with closing a contract debt the second audit surfaced. No schema or
+`explore()` response-shape changes.
+
+### Fixed
+
+- **Duplicated locked-DB error text**: `cli.py`'s `_exit_on_locked_db` and
+  `typed/cli.py`'s inline `overlay scip` lock-error branch printed the same
+  message from two copies. Consolidated into
+  `repoweaver.cli_errors.exit_on_locked_db`, shared by both call sites.
+- **Unused `BenchmarkAdapter` protocol**: `benchmark/adapters.py` defined a
+  `Protocol` that no code checked against — every adapter is looked up by
+  name via the `ADAPTERS`/`build_adapter` registry, never via structural
+  typing. Removed; `build_adapter`'s return type is now the concrete union
+  of adapter classes it can actually return.
+- **`_percentile`**: the hand-rolled linear-interpolation percentile now
+  delegates to `statistics.quantiles(data, n=100, method="inclusive")`,
+  which computes the identical interpolation — verified against the old
+  implementation across randomized inputs — instead of maintaining a
+  bespoke reimplementation. The empty-list and single-element guard
+  clauses are unchanged; `summarize_query_samples()` output is unchanged
+  field-for-field.
+
+### Added
+
+- **`debug_graph` hidden diagnostic tool**: `docs/explore-contract.md` has
+  documented `debug_graph` under `FABRIC_MCP_TOOLS` since v1, but
+  `server/mcp.py` never implemented it — a contract/code gap the second
+  audit surfaced. Implemented: given a symbol, returns a raw dump of its
+  matching node row(s) plus outgoing/incoming edges (`type`/`confidence`/
+  `provenance`/`ambiguous_candidates`) and any `unresolved_reference` rows
+  originating from it. Diagnostic only — no ranking, trimming, or
+  `blind_spots`; not part of the `explore()` contract. Hidden by default,
+  opt-in alongside `status`/`reindex` via `FABRIC_MCP_TOOLS=debug_graph`.
+
 ## v0.3.1 — Fix-up release
 
 A round of internal audit review of v0.3.0 surfaced several correctness and

@@ -11,9 +11,11 @@ import pytest
 from repoweaver.benchmark.compare import evaluate_gates, load_release_gates
 from repoweaver.benchmark.groundtruth import GroundTruth, evaluate
 from repoweaver.benchmark.metrics import (
+    QuerySample,
     cross_file_dependent_coverage,
     edge_counts,
     graph_signature,
+    summarize_query_samples,
 )
 from repoweaver.benchmark.report import render_report
 from repoweaver.benchmark.runner import run_benchmark
@@ -399,3 +401,38 @@ class TestRunBenchmark:
         result = run_benchmark(repo=GT_DEMO, name="gt_demo", adapter="codegraph")
         assert result["status"] == "SKIP"
         assert "reason" in result
+
+
+# ---------------------------------------------------------------------------
+# summarize_query_samples() / _percentile() boundary cases
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizeQuerySamples:
+    def test_zero_samples_yields_all_none(self):
+        summary = summarize_query_samples([])
+        assert summary == {
+            "query_latency_ms_p50": None,
+            "query_latency_ms_p95": None,
+            "context_tokens_p50": None,
+            "context_tokens_p95": None,
+        }
+
+    def test_single_sample_yields_that_samples_values(self):
+        sample = QuerySample(query="q", latency_ms=12.5, context_tokens=40)
+        summary = summarize_query_samples([sample])
+        assert summary == {
+            "query_latency_ms_p50": 12.5,
+            "query_latency_ms_p95": 12.5,
+            "context_tokens_p50": 40.0,
+            "context_tokens_p95": 40.0,
+        }
+
+    def test_multiple_samples_matches_expected_percentiles(self):
+        samples = [
+            QuerySample(query=f"q{i}", latency_ms=float(i), context_tokens=i)
+            for i in range(1, 21)
+        ]
+        summary = summarize_query_samples(samples)
+        assert summary["query_latency_ms_p50"] == pytest.approx(10.5)
+        assert summary["query_latency_ms_p95"] == pytest.approx(19.05)
