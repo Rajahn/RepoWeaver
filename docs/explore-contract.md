@@ -15,8 +15,7 @@ def explore(
     max_tokens: int = 4000,
     depth: int = 2,
     min_confidence: float = 0.5,
-) -> ExploreResult:
-    ...
+) -> ExploreResult: ...
 ```
 
 ### Parameters

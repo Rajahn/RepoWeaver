@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import typer
@@ -27,6 +28,15 @@ def _db_path(repo_root: Path) -> Path:
     return repo_root / ".repoweaver" / "graph.db"
 
 
+def _exit_on_locked_db(db_path: Path, exc: sqlite3.OperationalError) -> None:
+    print(
+        f"error: could not access {db_path} ({exc}). "
+        "Another `fabric build`/`fabric watch` process is likely holding a "
+        "lock on it — wait for it to finish, or stop it, then retry."
+    )
+    raise typer.Exit(code=1)
+
+
 @app.command()
 def build(
     repo: str = typer.Argument(".", help="Path to the repository root."),
@@ -36,8 +46,12 @@ def build(
     db_path = _db_path(repo_root)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    with GraphStore(db_path) as store:
-        stats = Indexer(repo_root, store).build()
+    try:
+        with GraphStore(db_path) as store:
+            stats = Indexer(repo_root, store).build()
+    except sqlite3.OperationalError as exc:
+        _exit_on_locked_db(db_path, exc)
+        return
 
     print(
         f"Indexed {stats.files} file(s): {stats.nodes} node(s), "
@@ -112,28 +126,33 @@ def watch(
     db_path = _db_path(repo_root)
     db_path.parent.mkdir(parents=True, exist_ok=True)
 
-    if not db_path.exists():
-        print(f"No index found at {db_path} — running full build first.")
+    try:
+        if not db_path.exists():
+            print(f"No index found at {db_path} — running full build first.")
+            with GraphStore(db_path) as store:
+                stats = Indexer(repo_root, store).build()
+            print(
+                f"Indexed {stats.files} file(s): {stats.nodes} node(s), "
+                f"{stats.edges} edge(s) in {stats.elapsed_seconds:.2f}s"
+            )
+
+        def _report(changed: set[str], deleted: set[str], stats) -> None:
+            print(
+                f"sync: changed={len(changed)} deleted={len(deleted)} "
+                f"files={stats.files} nodes={stats.nodes} edges={stats.edges} "
+                f"unresolved={stats.unresolved} elapsed={stats.elapsed_seconds:.2f}s"
+            )
+
+        print(f"Watching {repo_root} (debounce={debounce_ms}ms). Ctrl-C to stop.")
         with GraphStore(db_path) as store:
-            stats = Indexer(repo_root, store).build()
-        print(
-            f"Indexed {stats.files} file(s): {stats.nodes} node(s), "
-            f"{stats.edges} edge(s) in {stats.elapsed_seconds:.2f}s"
-        )
-
-    def _report(changed: set[str], deleted: set[str], stats) -> None:
-        print(
-            f"sync: changed={len(changed)} deleted={len(deleted)} "
-            f"files={stats.files} nodes={stats.nodes} edges={stats.edges} "
-            f"unresolved={stats.unresolved} elapsed={stats.elapsed_seconds:.2f}s"
-        )
-
-    print(f"Watching {repo_root} (debounce={debounce_ms}ms). Ctrl-C to stop.")
-    with GraphStore(db_path) as store:
-        try:
-            watch_and_sync(repo_root, store, debounce_ms=debounce_ms, on_sync=_report)
-        except KeyboardInterrupt:
-            print("Stopped.")
+            try:
+                watch_and_sync(
+                    repo_root, store, debounce_ms=debounce_ms, on_sync=_report
+                )
+            except KeyboardInterrupt:
+                print("Stopped.")
+    except sqlite3.OperationalError as exc:
+        _exit_on_locked_db(db_path, exc)
 
 
 @app.command()

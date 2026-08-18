@@ -64,16 +64,27 @@ def _make_slice(
     }
 
 
-def _trim_to_budget(slices: list[dict], max_tokens: int) -> list[dict]:
+_MIN_KEEP_FRACTION = 0.2
+_FRAGMENT_LINE_THRESHOLD = 10
+
+
+def _trim_to_budget(slices: list[dict], max_tokens: int) -> tuple[list[dict], int]:
     """Keep whole source lines while respecting the soft token budget.
 
     A single class can span thousands of lines. Returning it whole would make
-    ``max_tokens`` meaningless, so the first oversized slice is shortened at a
-    line boundary and marked as truncated. The source remains verbatim and the
+    ``max_tokens`` meaningless, so an oversized slice is shortened at a line
+    boundary and marked as truncated. The source remains verbatim and the
     reported ``span_end`` is adjusted to match the returned lines.
+
+    A slice that would be cut down to less than 20% of its original line
+    count (and has more than 10 lines to begin with) is dropped instead of
+    emitted as a near-useless fragment; it doesn't consume any budget, so the
+    next slice in priority order gets a chance to fit. Returns
+    ``(slices, skipped_count)``.
     """
     out: list[dict] = []
     used = 0
+    skipped = 0
     budget = max(1, max_tokens)
 
     for original in slices:
@@ -82,6 +93,7 @@ def _trim_to_budget(slices: list[dict], max_tokens: int) -> list[dict]:
             break
 
         source_lines = original["source"].splitlines()
+        total_lines = len(source_lines)
         kept: list[str] = []
         for line in source_lines:
             candidate = "\n".join([*kept, line])
@@ -96,15 +108,22 @@ def _trim_to_budget(slices: list[dict], max_tokens: int) -> list[dict]:
         if not kept:
             break
 
+        if (
+            total_lines > _FRAGMENT_LINE_THRESHOLD
+            and len(kept) < total_lines * _MIN_KEEP_FRACTION
+        ):
+            skipped += 1
+            continue
+
         item = dict(original)
         item["source"] = "\n".join(kept)
-        if len(kept) < len(source_lines) or kept[-1] != source_lines[len(kept) - 1]:
+        if len(kept) < total_lines or kept[-1] != source_lines[len(kept) - 1]:
             item["truncated"] = True
             item["span_end"] = item["span_start"] + len(kept) - 1
         out.append(item)
         used += _estimate_tokens(item["source"])
 
-    return out
+    return out, skipped
 
 
 def _base_response(query: str, task: str, repo: str) -> dict:
@@ -117,6 +136,7 @@ def _base_response(query: str, task: str, repo: str) -> dict:
             "nodes_visited": 0,
             "edges_traversed": 0,
             "tokens_estimated": 0,
+            "skipped_slices": 0,
             "freshness": "ok",
         },
         "blind_spots": BLIND_SPOTS,
@@ -191,16 +211,38 @@ def explore(
         return response
 
 
+_TYPE_KINDS = {"class", "interface", "enum", "annotation"}
+
+
 def _check_ambiguity(query: str, seeds: list) -> list[dict] | None:
+    """Disambiguate same-name hits, grouped by kind family.
+
+    A type declaration (class/interface/enum/annotation) and its own
+    constructor share `simple_name` by construction — that is not ambiguity,
+    it's Java. So when any type-kind node matches the bare query, a unique
+    type qualified_name wins outright regardless of how many same-named
+    constructors/methods also matched. Candidates are only surfaced when two
+    or more *distinct* symbols within the same kind family (two classes, or
+    two methods, sharing a name) are a genuine toss-up.
+    """
     bare = query.strip()
     if not bare or any(c in bare for c in " ()#."):
         return None  # only bare symbol-name queries are candidates for disambiguation
-    distinct_qnames = {s.qualified_name for s in seeds if s.simple_name == bare}
+    matching = [s for s in seeds if s.simple_name == bare]
+    if len(matching) < 2:
+        return None
+
+    type_seeds = [s for s in matching if s.kind in _TYPE_KINDS]
+    type_qnames = {s.qualified_name for s in type_seeds}
+    if len(type_qnames) == 1:
+        return None  # a unique type node beats any same-named ctor/method noise
+    group = type_seeds if len(type_qnames) >= 2 else matching
+
+    distinct_qnames = {s.qualified_name for s in group}
     if len(distinct_qnames) < 2:
         return None
-    top = sorted(
-        (s for s in seeds if s.simple_name == bare), key=lambda s: s.score, reverse=True
-    )
+
+    top = sorted(group, key=lambda s: s.score, reverse=True)
     if len(top) >= 2 and top[0].score > top[1].score * 1.5:
         return None  # a clear winner — not ambiguous
     return [
@@ -246,9 +288,12 @@ def _fill_understand_or_locate(
                 _make_slice(repo_root, neighbor, confidence, "tree_sitter_java")
             )
 
-    response["slices"] = _trim_to_budget(slices, max_tokens)
+    slices.sort(key=lambda s: (-s["confidence"], s["span_end"] - s["span_start"]))
+
+    response["slices"], skipped = _trim_to_budget(slices, max_tokens)
     response["stats"]["nodes_visited"] = nodes_visited
     response["stats"]["edges_traversed"] = edges_traversed
+    response["stats"]["skipped_slices"] = skipped
     response["stats"]["tokens_estimated"] = sum(
         _estimate_tokens(s["source"]) for s in response["slices"]
     )
@@ -299,10 +344,11 @@ def _fill_impact(
         if not frontier:
             break
 
-    response["slices"] = _trim_to_budget(slices, max_tokens)
+    response["slices"], skipped = _trim_to_budget(slices, max_tokens)
     response["blast_radius"] = blast_radius
     response["stats"]["nodes_visited"] = nodes_visited
     response["stats"]["edges_traversed"] = edges_traversed
+    response["stats"]["skipped_slices"] = skipped
     response["stats"]["tokens_estimated"] = sum(
         _estimate_tokens(s["source"]) for s in response["slices"]
     )
@@ -374,9 +420,10 @@ def _fill_debug(
         slices.append(_make_slice(repo_root, node, confidence, "tree_sitter_java"))
 
     response["call_path"] = call_path
-    response["slices"] = _trim_to_budget(slices, max_tokens)
+    response["slices"], skipped = _trim_to_budget(slices, max_tokens)
     response["stats"]["nodes_visited"] = nodes_visited
     response["stats"]["edges_traversed"] = edges_traversed
+    response["stats"]["skipped_slices"] = skipped
     response["stats"]["tokens_estimated"] = sum(
         _estimate_tokens(s["source"]) for s in response["slices"]
     )

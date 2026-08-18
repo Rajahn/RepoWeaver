@@ -5,14 +5,14 @@ from repoweaver.cli import app
 
 
 def test_version():
-    assert repoweaver.__version__ == "0.3.0"
+    assert repoweaver.__version__ == "0.3.1"
 
 
 def test_cli_version():
     runner = CliRunner()
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.3.0" in result.output
+    assert "0.3.1" in result.output
 
 
 def test_cli_help():

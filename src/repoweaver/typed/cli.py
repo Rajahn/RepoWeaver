@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import typer
@@ -27,5 +28,17 @@ def scip(
     """Merge a SCIP index into the repo's call-graph as *_TYPED edges."""
     repo_root = Path(repo).resolve()
     index_path = Path(index).resolve()
-    stats = run_overlay(repo_root, index_path, dry_run=dry_run)
+    db_path = repo_root / ".repoweaver" / "graph.db"
+    try:
+        stats = run_overlay(repo_root, index_path, dry_run=dry_run)
+    except ValueError as exc:
+        print(f"error: could not read SCIP index {index_path} — {exc}")
+        raise typer.Exit(code=1) from None
+    except sqlite3.OperationalError as exc:
+        print(
+            f"error: could not access {db_path} ({exc}). "
+            "Another `fabric build`/`fabric watch` process is likely holding "
+            "a lock on it — wait for it to finish, or stop it, then retry."
+        )
+        raise typer.Exit(code=1) from None
     print(json.dumps(stats.as_dict(), indent=2, sort_keys=True))

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from pathlib import Path
 from typing import Self
 
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
+_DEFAULT_BUSY_TIMEOUT_MS = 10_000
 
 
 def edge_id(from_id: str, to_id: str, edge_type: str) -> str:
@@ -105,6 +107,14 @@ class GraphStore:
         self._conn.row_factory = sqlite3.Row
         if self.db_path != ":memory:":
             self._conn.execute("PRAGMA journal_mode=WAL")
+        # WAL readers never block on a writer, but two processes writing at
+        # once (e.g. `fabric watch` plus a manual `fabric build`) will —
+        # without this, SQLite raises "database is locked" immediately
+        # instead of waiting for the other writer to commit.
+        busy_timeout_ms = int(
+            os.environ.get("FABRIC_BUSY_TIMEOUT_MS", _DEFAULT_BUSY_TIMEOUT_MS)
+        )
+        self._conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms}")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._apply_schema()
         return self

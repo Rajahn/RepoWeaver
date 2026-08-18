@@ -1,5 +1,52 @@
 # Changelog
 
+## v0.3.1 — Fix-up release
+
+A round of internal audit review of v0.3.0 surfaced several correctness and
+robustness gaps; this release fixes all of them. No schema, contract, or
+benchmark-definition changes.
+
+### Fixed
+
+- **`explore()` ambiguity detection** (`locate`/`understand`/`impact`/`debug`):
+  a class query no longer collides with its own same-named constructor and
+  gets misreported as ambiguous — disambiguation now groups by
+  `(simple_name, kind-family)` and gives a unique type node (class/interface/
+  enum/annotation) priority over same-named constructors/methods. Genuine
+  same-name collisions across distinct classes, and existing method-vs-method
+  ambiguity (e.g. two unrelated `close()` overrides), are still reported via
+  `candidates` exactly as before.
+- **Token-budget trimming**: neighbor slices are now sorted by
+  `(confidence desc, span size asc)` before budget allocation, and a slice
+  that would be cut down to less than 20% of its own line count (and has more
+  than 10 lines) is skipped entirely instead of emitted as a near-useless
+  fragment. A response's `stats.skipped_slices` counter reports how many
+  slices were dropped this way.
+- **Incremental-build cache size**: `file_refs_cache` no longer duplicates a
+  file's full source text inside its cached JSON payload — source is read
+  back off disk when needed. An older cache row that still embeds `source` is
+  safely ignored (never trusted) and the file is re-read from disk instead.
+- **Concurrent `build`/`watch` access**: `GraphStore` now sets an explicit
+  10-second `PRAGMA busy_timeout` (overridable via `FABRIC_BUSY_TIMEOUT_MS`),
+  and `fabric build`/`watch`/`overlay scip` print a human-readable message —
+  instead of a raw traceback — when another process is holding a write lock.
+- **Watcher robustness**: if a file is deleted in the brief window between
+  being reported as changed and being read for (re)parsing, incremental build
+  now treats it as deleted instead of letting the `OSError` crash the watch
+  process.
+- **`fabric overlay scip`**: a corrupted or unreadable `.scip` index now
+  prints a friendly error and exits with status 1, instead of a raw
+  traceback.
+- **`scripts/check_public.py`**: switched the leak-detection file scanner
+  from an allowlist of text suffixes to a blocklist of known-binary ones, so
+  `.java`, `.sh`, and extensionless files are scanned by default instead of
+  silently skipped.
+- Removed `_split_member_qname`, an unused function with no remaining
+  callers.
+- Internal: `verify.py`'s four `_run_*_verification` functions were split
+  into small per-section helpers sharing a common report/pass-fail skeleton;
+  output and pass/fail behavior are unchanged.
+
 ## v0.3.0 — M3 (Type-precision overlay)
 
 ### Added

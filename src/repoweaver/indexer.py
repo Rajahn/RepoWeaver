@@ -73,6 +73,20 @@ def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _safe_file_hash(path: Path) -> str | None:
+    try:
+        return file_hash(path)
+    except OSError:
+        return None
+
+
+def _safe_parse(parser: JavaParser, path: Path) -> ParsedFile | None:
+    try:
+        return parser.parse_file(path)
+    except OSError:
+        return None
+
+
 def _entry_point_kind(annotations: list[str]) -> str:
     for name in annotations:
         kind = ENTRY_POINT_ANNOTATIONS.get(name)
@@ -102,6 +116,11 @@ def _discover_files(repo_root: Path) -> set[str]:
 
 
 def _parsed_file_to_json(pf: ParsedFile) -> str:
+    """Serializes everything the resolver needs except `source` — the file's own
+    bytes on disk are the source of truth, and duplicating them into every
+    cache row made `file_refs_cache` the dominant share of `graph.db`
+    (see docs/adr/0002-m2-resolution-and-freshness.md and the M2 audit note
+    in CHANGELOG.md)."""
     return json.dumps(
         {
             "file": pf.file,
@@ -112,13 +131,22 @@ def _parsed_file_to_json(pf: ParsedFile) -> str:
             "type_refs": [asdict(t) for t in pf.type_refs],
             "calls": [asdict(c) for c in pf.calls],
             "type_uses": [asdict(t) for t in pf.type_uses],
-            "source": pf.source,
         }
     )
 
 
-def _parsed_file_from_json(payload: str) -> ParsedFile:
+def _parsed_file_from_json(payload: str, repo_root: Path) -> ParsedFile | None:
+    """Reconstructs a ParsedFile from a cache row, reading `source` back off
+    disk (matching how `JavaParser.parse_file` decodes it). A payload from an
+    older RepoWeaver version may still carry an embedded `source` key — it's
+    simply ignored, no migration needed since a content-hash mismatch already
+    forces a re-parse on any real drift. Returns None (cache miss) if the file
+    can no longer be read, so the caller re-parses instead of guessing."""
     d = json.loads(payload)
+    try:
+        source = (repo_root / d["file"]).read_bytes().decode("utf-8", errors="replace")
+    except OSError:
+        return None
     return ParsedFile(
         file=d["file"],
         package=d["package"],
@@ -128,7 +156,7 @@ def _parsed_file_from_json(payload: str) -> ParsedFile:
         type_refs=[TypeRef(**t) for t in d["type_refs"]],
         calls=[CallRef(**c) for c in d["calls"]],
         type_uses=[TypeUseRef(**t) for t in d.get("type_uses", [])],
-        source=d["source"],
+        source=source,
     )
 
 
@@ -171,26 +199,45 @@ class Indexer:
 
         all_files = (_discover_files(self.repo_root) | changed) - deleted
         parsed_files: list[ParsedFile] = []
+        vanished: set[str] = set()
         for rel in sorted(all_files):
+            abs_path = self.repo_root / rel
+            content_hash = _safe_file_hash(abs_path)
+            if content_hash is None:
+                # Watcher reported this file as present, but it's gone by the
+                # time we got here (rename/delete race) — treat it as deleted
+                # rather than crashing the watch process.
+                vanished.add(rel)
+                continue
+
             if rel in changed:
-                pf = parser.parse_file(self.repo_root / rel)
-                content_hash = file_hash(self.repo_root / rel)
+                pf = _safe_parse(parser, abs_path)
+                if pf is None:
+                    vanished.add(rel)
+                    continue
                 self.store.set_file_refs_cache(
                     rel, content_hash, _parsed_file_to_json(pf)
                 )
             else:
                 cached = self.store.get_file_refs_cache(rel)
-                content_hash = file_hash(self.repo_root / rel)
+                pf = None
                 if cached is not None and cached[0] == content_hash:
-                    pf = _parsed_file_from_json(cached[1])
-                else:
-                    # Cache miss (first-ever incremental call, or drift) —
+                    pf = _parsed_file_from_json(cached[1], self.repo_root)
+                if pf is None:
+                    # Cache miss (first-ever incremental call, drift, or the
+                    # cached source can no longer be read back off disk) —
                     # never guess stale data; re-parse to stay correct.
-                    pf = parser.parse_file(self.repo_root / rel)
+                    pf = _safe_parse(parser, abs_path)
+                    if pf is None:
+                        vanished.add(rel)
+                        continue
                     self.store.set_file_refs_cache(
                         rel, content_hash, _parsed_file_to_json(pf)
                     )
             parsed_files.append(pf)
+
+        for rel in vanished:
+            self.store.delete_file(rel)
 
         node_rows_by_file: dict[str, list[NodeRow]] = {}
         all_node_rows: list[NodeRow] = []

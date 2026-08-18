@@ -8,18 +8,45 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKIP_DIRS = {".git", ".venv", ".repoweaver", ".pytest_cache", ".ruff_cache"}
-TEXT_SUFFIXES = {
-    ".md",
-    ".py",
-    ".toml",
-    ".yaml",
-    ".yml",
-    ".json",
-    ".sql",
-    ".txt",
-    ".ini",
-    ".cfg",
+SKIP_DIRS = {
+    ".git",
+    ".venv",
+    ".repoweaver",
+    ".pytest_cache",
+    ".ruff_cache",
+    "__pycache__",
+}
+
+# Extensionless files (Makefile, LICENSE, ...) are scanned too — this is a
+# blocklist of known-binary suffixes, not an allowlist of known-text ones, so
+# a new text format (e.g. .java, .sh) is covered by default instead of
+# silently skipped until someone remembers to add it here.
+BINARY_SUFFIXES = {
+    ".pyc",
+    ".pyo",
+    ".so",
+    ".dylib",
+    ".dll",
+    ".class",
+    ".jar",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".ico",
+    ".pdf",
+    ".zip",
+    ".gz",
+    ".tar",
+    ".whl",
+    ".db",
+    ".sqlite",
+    ".sqlite3",
+    ".scip",
+    ".woff",
+    ".woff2",
+    ".ttf",
+    ".eot",
 }
 
 # Strings are split so this scanner does not flag its own source.
@@ -38,7 +65,7 @@ def iter_text_files() -> list[Path]:
         path
         for path in ROOT.rglob("*")
         if path.is_file()
-        and path.suffix.lower() in TEXT_SUFFIXES
+        and path.suffix.lower() not in BINARY_SUFFIXES
         and not any(part in SKIP_DIRS for part in path.relative_to(ROOT).parts)
     ]
 

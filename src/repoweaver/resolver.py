@@ -64,13 +64,6 @@ def _return_type_from_signature(signature: str, method_name: str) -> str:
     return raw.rsplit(".", 1)[-1] if raw else "unknown"
 
 
-def _split_member_qname(qname: str) -> tuple[str | None, str, int]:
-    """ "pkg.Owner#name(A,B)" -> ("pkg.Owner", "name", 2) — arity-only view of
-    `_split_member_signature`, for call sites that don't need the param types."""
-    owner, name, param_types = _split_member_signature(qname)
-    return owner, name, len(param_types)
-
-
 def _ancestor_type_qnames(owner_qname: str, package: str) -> list[str]:
     """Innermost-first list of enclosing type qnames for nested-class simple-name
     resolution: "pkg.Outer.Inner" -> ["pkg.Outer.Inner", "pkg.Outer"]."""
