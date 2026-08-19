@@ -1,8 +1,8 @@
-# RepoWeaver
+# Code Context Fabric
 
 > **Code context fabric for AI coding agents** — deterministic call-graph indexing, hybrid retrieval, and a single-tool MCP interface.
 
-RepoWeaver builds a local, zero-cost code intelligence layer that lets AI coding agents (Codex, Claude Code, and other MCP clients) answer structural questions without reading entire files.
+Code Context Fabric builds a local, zero-cost code intelligence layer that lets AI coding agents (Codex, Claude Code, and other MCP clients) answer structural questions without reading entire files.
 
 ```
 "Who calls this method, and what would break if I change its signature?"
@@ -14,7 +14,7 @@ RepoWeaver builds a local, zero-cost code intelligence layer that lets AI coding
 
 AI agents that rely on grep or full-file reads waste tokens and miss cross-file call chains.
 Existing tools either require cloud APIs, embed LLMs in the index layer, or carry restrictive licenses.
-RepoWeaver takes only the verified-consensus patterns from the landscape and assembles them locally.
+Code Context Fabric takes only the verified-consensus patterns from the landscape and assembles them locally.
 
 ## Design
 
@@ -41,7 +41,7 @@ Six primitives, all independently validated across multiple open-source tools:
 | M4-0 — Query facade (qualified syntax, ambiguity panorama, cluster ranking, configurable entry points) | v0.4.0 | ✅ shipped |
 | M4 — Runtime overlay (OTel/Jaeger trace → edge weights) | v0.4.1 | planned |
 
-Each milestone ships a `fabric verify --level mN` gate that runs in CI.
+Each milestone ships a `ccf verify --level mN` gate that runs in CI.
 
 ## Verification approach
 
@@ -56,33 +56,33 @@ Benchmarks use public repos only — no proprietary code enters this repository.
 
 ## SOTA alignment — measured, not claimed
 
-RepoWeaver ships a reproducible benchmark harness and refuses to count
+Code Context Fabric ships a reproducible benchmark harness and refuses to count
 low-confidence or ambiguous edges as resolved coverage.
 
 Pinned commit `dae37cf…`; apples-to-apples scope `gson/src/main/`; both source
 and target files must be inside the scope.
 
-| Metric | v0.1 whole-repo baseline | RepoWeaver v0.2 core | CodeGraph 1.5 core | Gate |
+| Metric | v0.1 whole-repo baseline | Code Context Fabric v0.2 core | CodeGraph 1.5 core | Gate |
 |---|---:|---:|---:|---:|
 | Resolved cross-file dependent coverage | 35.3% | **90.12%** | 92.59% | >=90% |
 | Ambiguous edge rate | 89.3% | **6.36%** | not exposed | <=10% |
 | Fixture edge precision / recall | 1.0 / 1.0 | **1.0 / 1.0** | not measured | >=.95 / >=.90 |
 
-RepoWeaver passes its release gates and is in the same measured coverage band,
+Code Context Fabric passes its release gates and is in the same measured coverage band,
 while remaining 2.47 percentage points behind CodeGraph on this benchmark. We
 therefore claim **alignment**, not universal superiority. Coverage cannot be
 improved by adding ambiguous edges: the gate pairs it with ambiguity and
 fixture precision.
 
 ```bash
-fabric verify --level benchmark
-fabric benchmark run --repo /path/to/gson --name gson \
+ccf verify --level benchmark
+ccf benchmark run --repo /path/to/gson --name gson \
   --scope-prefix gson/src/main/ --output gson.json
-fabric benchmark compare --candidate gson.json --target benchmarks/sota-targets.yaml
+ccf benchmark compare --candidate gson.json --target benchmarks/sota-targets.yaml
 ```
 
 See [benchmark methodology](docs/benchmark-methodology.md), the checked-in
-[RepoWeaver v0.2 baseline](benchmarks/baselines/v0.2.0-gson-core.md), and the
+[Code Context Fabric v0.2 baseline](benchmarks/baselines/v0.2.0-gson-core.md), and the
 [CodeGraph 1.5 comparison](benchmarks/baselines/codegraph-1.5.0-gson-core.md).
 
 ### Indexing performance (v0.5.0, measured on an 884-file / 16.7k-node repo)
@@ -104,24 +104,26 @@ enough to amortize pool startup.
 ## Install
 
 ```bash
-git clone <this-repo> && cd repoweaver
+git clone https://github.com/Rajahn/code-context-fabric && cd code-context-fabric
 uv sync --extra dev
 
-uv run fabric build /path/to/your/java/repo     # index a repo, $0, no LLM
-uv run fabric check /path/to/your/java/repo      # OK | STALE (content-hash freshness)
-uv run fabric init /path/to/your/java/repo       # inject AGENTS.md protocol block
-uv run fabric watch /path/to/your/java/repo      # OS-event auto-sync, 2s debounce
-uv run fabric verify --level m2                  # watcher + incremental consistency gate
-uv run fabric overlay scip --repo . --index path/to/index.scip  # layer typed edges (M3)
-uv run fabric verify --level m3                  # typed overlay merge/precision gate
-uv run fabric verify --level query               # query-facade gate (qualified syntax, panorama, cluster rank)
-uv run fabric serve                              # start the MCP server (explore() tool)
+uv run ccf build /path/to/your/java/repo     # index a repo, $0, no LLM
+uv run ccf check /path/to/your/java/repo      # OK | STALE (content-hash freshness)
+uv run ccf init /path/to/your/java/repo       # inject AGENTS.md protocol block
+uv run ccf watch /path/to/your/java/repo      # OS-event auto-sync, 2s debounce
+uv run ccf verify --level m2                  # watcher + incremental consistency gate
+uv run ccf overlay scip --repo . --index path/to/index.scip  # layer typed edges (M3)
+uv run ccf verify --level m3                  # typed overlay merge/precision gate
+uv run ccf verify --level query               # query-facade gate (qualified syntax, panorama, cluster rank)
+uv run ccf serve                              # start the MCP server (explore() tool)
 ```
+
+`fabric` remains available as a compatibility alias for every `ccf` command above.
 
 v0.3.0 supports Java only, via tree-sitter plus an optional SCIP-derived
 typed overlay. M2 adds conservative overload/type resolution, `REFERENCES`,
 annotation symbols, unresolved-candidate storage, framework entry-point
-metadata and auto-sync. M3 adds `fabric overlay scip`, which merges
+metadata and auto-sync. M3 adds `ccf overlay scip`, which merges
 compiler-derived `*_TYPED` edges onto the existing graph without ever
 dropping an edge — see `docs/adr/0003-typed-overlay.md`. v0.4.0 adds a
 query facade in front of the same graph — see `docs/adr/0004-query-facade.md`

@@ -1,4 +1,4 @@
-# SOTA alignment targets for RepoWeaver `fabric benchmark compare`.
+# SOTA alignment targets for Code Context Fabric `ccf benchmark compare`.
 #
 # Two distinct kinds of number live here — do not conflate them:
 #
@@ -8,9 +8,9 @@
 #    methodology, and "coverage" without a matching precision/ambiguity
 #    number is not a comparable metric (see docs/benchmark-methodology.md).
 #
-# 2. `release_gates` — RepoWeaver's own hard gates, computed from metrics
+# 2. `release_gates` — Code Context Fabric's own hard gates, computed from metrics
 #    with definitions fully specified in docs/benchmark-methodology.md and
-#    src/repoweaver/benchmark/metrics.py. `fabric benchmark compare` fails
+#    src/codecontextfabric/benchmark/metrics.py. `ccf benchmark compare` fails
 #    the run if any gate fails.
 version: 1
 
@@ -21,7 +21,7 @@ published_reference:
     value: 0.933
     definition: >-
       CodeGraph defines coverage as the share of symbol-bearing files with at
-      least one resolved cross-file dependent. RepoWeaver measures the same
+      least one resolved cross-file dependent. Code Context Fabric measures the same
       file-level shape but additionally requires confidence>=0.5 and excludes
       every edge with ambiguous candidates. The 0.933 value is therefore a
       directional SOTA reference until both tools are run on the pinned commit

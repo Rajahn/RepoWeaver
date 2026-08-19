@@ -8,7 +8,7 @@ through the higher-level fixture pipeline.
 
 from __future__ import annotations
 
-from repoweaver.typed.scip_proto import (
+from codecontextfabric.typed.scip_proto import (
     ROLE_DEFINITION,
     decode_index,
     normalize_range,

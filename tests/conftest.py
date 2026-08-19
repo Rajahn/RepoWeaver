@@ -1,4 +1,4 @@
-"""pytest configuration and shared fixtures for RepoWeaver tests."""
+"""pytest configuration and shared fixtures for Code Context Fabric tests."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.graph.store import GraphStore
+from codecontextfabric.graph.store import GraphStore
 
 FIXTURE_SRC = Path(__file__).parent / "fixtures" / "javademo"
 
@@ -32,7 +32,7 @@ def javademo_repo(tmp_path: Path) -> Path:
 @pytest.fixture()
 def built_javademo(javademo_repo: Path):
     """A javademo repo already indexed into `.repoweaver/graph.db`."""
-    from repoweaver.indexer import Indexer
+    from codecontextfabric.indexer import Indexer
 
     db_path = javademo_repo / ".repoweaver" / "graph.db"
     db_path.parent.mkdir(parents=True, exist_ok=True)

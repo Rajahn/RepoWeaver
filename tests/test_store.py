@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from repoweaver.graph.store import EdgeRow, GraphStore, NodeRow
+from codecontextfabric.graph.store import EdgeRow, GraphStore, NodeRow
 
 
 def _node(nid: str, qname: str, simple: str, file: str = "A.java") -> NodeRow:

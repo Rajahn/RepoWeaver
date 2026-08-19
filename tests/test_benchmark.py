@@ -8,19 +8,24 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.benchmark.compare import evaluate_gates, load_release_gates
-from repoweaver.benchmark.groundtruth import GroundTruth, evaluate
-from repoweaver.benchmark.metrics import (
+from codecontextfabric.benchmark.compare import evaluate_gates, load_release_gates
+from codecontextfabric.benchmark.groundtruth import GroundTruth, evaluate
+from codecontextfabric.benchmark.metrics import (
     QuerySample,
     cross_file_dependent_coverage,
     edge_counts,
     graph_signature,
     summarize_query_samples,
 )
-from repoweaver.benchmark.report import render_report
-from repoweaver.benchmark.runner import run_benchmark
-from repoweaver.graph.store import EdgeRow, GraphStore, NodeRow, UnresolvedReferenceRow
-from repoweaver.indexer import Indexer
+from codecontextfabric.benchmark.report import render_report
+from codecontextfabric.benchmark.runner import run_benchmark
+from codecontextfabric.graph.store import (
+    EdgeRow,
+    GraphStore,
+    NodeRow,
+    UnresolvedReferenceRow,
+)
+from codecontextfabric.indexer import Indexer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GT_DEMO = REPO_ROOT / "benchmarks" / "fixtures" / "gt_demo"
@@ -363,7 +368,7 @@ class TestReport:
         candidate = {
             "name": "demo",
             "repo": "/tmp/demo",
-            "adapter": "repoweaver",
+            "adapter": "ccf",
             "status": "MEASURED",
             "nodes": 10,
             "ambiguous_edge_rate": 0.05,
@@ -374,7 +379,7 @@ class TestReport:
         assert "Release gates" in markdown
 
     def test_render_without_targets_skips_gates_section(self):
-        markdown = render_report({"name": "demo", "repo": "x", "adapter": "repoweaver"})
+        markdown = render_report({"name": "demo", "repo": "x", "adapter": "ccf"})
         assert "Release gates" not in markdown
 
 
@@ -388,7 +393,7 @@ class TestRunBenchmark:
         result = run_benchmark(
             repo=GT_DEMO,
             name="gt_demo",
-            adapter="repoweaver",
+            adapter="ccf",
             ground_truth=GROUND_TRUTH_YAML,
         )
         assert result["status"] == "MEASURED"

@@ -3,8 +3,8 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "repoweaver"
-version = "0.5.0"
+name = "code-context-fabric"
+version = "0.5.1"
 description = "Code context fabric for AI coding agents — deterministic call-graph indexing, hybrid retrieval, and single-tool MCP interface"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -23,7 +23,8 @@ dependencies = [
 dev = ["pytest>=8", "ruff>=0.5"]
 
 [project.scripts]
-fabric = "repoweaver.cli:app"
+ccf = "codecontextfabric.cli:main"
+fabric = "codecontextfabric.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/repoweaver"]
+packages = ["src/codecontextfabric"]

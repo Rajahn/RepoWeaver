@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from repoweaver.search.engine import SearchEngine, SearchQuery, personalized_pagerank
+from codecontextfabric.search.engine import (
+    SearchEngine,
+    SearchQuery,
+    personalized_pagerank,
+)
 
 
 def test_bm25_candidates_and_exact_hit(built_javademo):
-    from repoweaver.graph.store import GraphStore
+    from codecontextfabric.graph.store import GraphStore
 
     with GraphStore(built_javademo / ".repoweaver" / "graph.db") as store:
         engine = SearchEngine(store)
@@ -14,7 +18,7 @@ def test_bm25_candidates_and_exact_hit(built_javademo):
 
 
 def test_personalized_pagerank_propagates_to_neighbors(built_javademo):
-    from repoweaver.graph.store import GraphStore
+    from codecontextfabric.graph.store import GraphStore
 
     with GraphStore(built_javademo / ".repoweaver" / "graph.db") as store:
         greeter = store.find_by_qualified_name("com.example.demo.Greeter")[0]
@@ -28,7 +32,7 @@ def test_personalized_pagerank_propagates_to_neighbors(built_javademo):
 
 
 def test_search_ranks_exact_match_first(built_javademo):
-    from repoweaver.graph.store import GraphStore
+    from codecontextfabric.graph.store import GraphStore
 
     with GraphStore(built_javademo / ".repoweaver" / "graph.db") as store:
         engine = SearchEngine(store)

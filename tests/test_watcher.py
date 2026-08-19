@@ -9,10 +9,10 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.benchmark.metrics import graph_signature
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer
-from repoweaver.watcher import watch_and_sync
+from codecontextfabric.benchmark.metrics import graph_signature
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer
+from codecontextfabric.watcher import watch_and_sync
 
 PKG = Path("com/example")
 

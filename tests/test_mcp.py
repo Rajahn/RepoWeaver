@@ -1,8 +1,8 @@
 import asyncio
 import importlib
 
-from repoweaver.server import mcp as mcp_module
-from repoweaver.server.mcp import mcp
+from codecontextfabric.server import mcp as mcp_module
+from codecontextfabric.server.mcp import mcp
 
 
 def test_only_explore_is_public_by_default():
@@ -30,7 +30,7 @@ def test_debug_graph_not_indexed_returns_error(tmp_path, monkeypatch):
     reloaded = importlib.reload(mcp_module)
     try:
         result = reloaded.debug_graph(symbol="Greeter", repo=str(tmp_path))
-        assert result == {"error": "not_indexed", "hint": "run: fabric build"}
+        assert result == {"error": "not_indexed", "hint": "run: ccf build"}
     finally:
         importlib.reload(mcp_module)
 

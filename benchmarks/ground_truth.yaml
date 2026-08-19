@@ -1,4 +1,4 @@
-# Machine-verifiable correctness ground truth for RepoWeaver's indexer.
+# Machine-verifiable correctness ground truth for Code Context Fabric's indexer.
 #
 # Fixture: benchmarks/fixtures/gt_demo — a small, hand-written Java package
 # deliberately containing one genuine same-name ambiguity (two unrelated
@@ -6,7 +6,7 @@
 # receiver, so the resolver cannot disambiguate) alongside unambiguous
 # CALLS/EXTENDS/IMPLEMENTS/IMPORTS edges. See docs/benchmark-methodology.md.
 #
-# `fabric benchmark run --repo benchmarks/fixtures/gt_demo --name gt_demo
+# `ccf benchmark run --repo benchmarks/fixtures/gt_demo --name gt_demo
 # --ground-truth benchmarks/ground_truth.yaml --output out.json` computes
 # node recall, edge precision/recall, and query top-k recall/MRR against
 # this file.

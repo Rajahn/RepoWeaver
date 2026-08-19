@@ -13,9 +13,9 @@ from __future__ import annotations
 import random
 from pathlib import Path
 
-from repoweaver.benchmark.metrics import graph_signature
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer
+from codecontextfabric.benchmark.metrics import graph_signature
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer
 
 
 def _write(repo: Path, rel: str, content: str) -> None:
@@ -66,7 +66,9 @@ def _base_repo(tmp_path: Path) -> Path:
     return root
 
 
-def test_body_only_edit_takes_fast_path_and_matches_full_rebuild(tmp_path: Path) -> None:
+def test_body_only_edit_takes_fast_path_and_matches_full_rebuild(
+    tmp_path: Path,
+) -> None:
     root = _base_repo(tmp_path)
     _write(
         root,
@@ -82,7 +84,9 @@ def test_body_only_edit_takes_fast_path_and_matches_full_rebuild(tmp_path: Path)
     assert incremental_sig == _full_signature(root)
 
 
-def test_signature_change_escalates_but_still_matches_full_rebuild(tmp_path: Path) -> None:
+def test_signature_change_escalates_but_still_matches_full_rebuild(
+    tmp_path: Path,
+) -> None:
     root = _base_repo(tmp_path)
     _write(
         root,
@@ -98,7 +102,9 @@ def test_signature_change_escalates_but_still_matches_full_rebuild(tmp_path: Pat
     assert incremental_sig == _full_signature(root)
 
 
-def test_supertype_change_escalates_but_still_matches_full_rebuild(tmp_path: Path) -> None:
+def test_supertype_change_escalates_but_still_matches_full_rebuild(
+    tmp_path: Path,
+) -> None:
     root = _base_repo(tmp_path)
     _write(
         root,
@@ -155,7 +161,9 @@ def test_batch_of_body_only_edits_takes_fast_path(tmp_path: Path) -> None:
     assert incremental_sig == _full_signature(root)
 
 
-def test_random_watch_sequence_matches_full_rebuild_at_every_step(tmp_path: Path) -> None:
+def test_random_watch_sequence_matches_full_rebuild_at_every_step(
+    tmp_path: Path,
+) -> None:
     """Simulates a `fabric watch` session: a mix of body edits (should stay on
     the fast path), signature/supertype edits and new files (should escalate),
     and deletions — applied one batch at a time. After every batch the
@@ -217,9 +225,13 @@ def test_random_watch_sequence_matches_full_rebuild_at_every_step(tmp_path: Path
             deleted = {rel}
             live.discard(rel)
 
-        stats, incremental_sig = _sync_incremental(root, changed=changed, deleted=deleted)
+        stats, incremental_sig = _sync_incremental(
+            root, changed=changed, deleted=deleted
+        )
         if stats.incremental:
             fast_path_hits += 1
-        assert incremental_sig == _full_signature(root), f"mismatch at step {step} ({kind})"
+        assert incremental_sig == _full_signature(root), (
+            f"mismatch at step {step} ({kind})"
+        )
 
     assert fast_path_hits > 0, "fast path should win at least one step in this sequence"

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from repoweaver.parser.java import JavaParser
+from codecontextfabric.parser.java import JavaParser
 
 FIXTURE = Path(__file__).parent / "fixtures" / "javademo"
 

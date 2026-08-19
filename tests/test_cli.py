@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typer.testing import CliRunner
 
-from repoweaver.cli import app
+from codecontextfabric.cli import app
 
 runner = CliRunner()
 
@@ -60,4 +60,33 @@ def test_verify_m1_passes_on_bundled_fixture():
 def test_version_command():
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.4.0" in result.output
+    assert "0.5.1" in result.output
+
+
+def test_console_entry_point_main_function_exists_and_builds(tmp_path):
+    """Regression guard for the rename-era bug: [project.scripts] must point at
+    a *callable function* (main), not the typer app object. CliRunner(app) tests
+    the object but never exercises the console entry. This calls main() directly
+    and confirms it dispatches to a real command."""
+    import subprocess
+    import sys
+
+    java = tmp_path / "A.java"
+    java.write_text("package p;\npublic class A { public void m() {} }\n")
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; sys.argv=['ccf','build',sys.argv[1]]; "
+                "from codecontextfabric.cli import main; main()"
+            ),
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".repoweaver" / "graph.db").exists()

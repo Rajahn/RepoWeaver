@@ -1,4 +1,4 @@
-"""Tests for SCIP symbol -> RepoWeaver qualified_name mapping."""
+"""Tests for SCIP symbol -> Code Context Fabric qualified_name mapping."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer
-from repoweaver.typed.symbol_map import (
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer
+from codecontextfabric.typed.symbol_map import (
     SkipReason,
     SymbolMapper,
     decode_jvm_param_types,

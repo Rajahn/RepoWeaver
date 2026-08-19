@@ -14,8 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer
 
 FIXTURE = Path(__file__).parent / "fixtures" / "overloads"
 PKG = "com.example.overloads"

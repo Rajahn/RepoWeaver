@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.5.1 — Brand unification: RepoWeaver → Code Context Fabric
+
+Project and package renamed from RepoWeaver to Code Context Fabric ahead of
+the GitHub repository move to `Rajahn/code-context-fabric`. No graph
+semantics, schema, or on-disk index format changed.
+
+### Changed
+
+- Python package renamed `repoweaver` → `codecontextfabric`
+  (`src/repoweaver/` → `src/codecontextfabric/`); every import, test, script,
+  and doc reference updated accordingly.
+- Distribution name is now `code-context-fabric`; the CLI's primary entry
+  point is `ccf`, with `fabric` kept as a compatibility alias so existing
+  scripts, CI configs, and AGENTS.md instructions keep working unchanged.
+- Benchmark adapter identifier `repoweaver` renamed to `ccf`
+  (`--adapter ccf`, `ADAPTERS["ccf"]`).
+- `ccf init`/`fabric init` now also recognizes the pre-rebrand
+  `<!-- repoweaver:start/end -->` AGENTS.md markers, so re-running it on an
+  already-onboarded repo replaces the old block in place instead of
+  duplicating it.
+
+### Unchanged (intentionally)
+
+- The on-disk index directory is still named `.repoweaver/` (e.g.
+  `.repoweaver/graph.db`, `.repoweaver/entrypoints.yaml`) to avoid
+  invalidating already-indexed repositories. Revisit in a future release.
+
 ## v0.5.0 — Incremental sync + parallel parse (P0 perf)
 
 `Indexer._sync` used to rebuild everything from scratch on every build/watch

@@ -1,7 +1,7 @@
-# RepoWeaver Benchmarks
+# Code Context Fabric Benchmarks
 
 This directory contains benchmark cases and tooling used to validate
-RepoWeaver's call-graph accuracy and retrieval quality.
+Code Context Fabric's call-graph accuracy and retrieval quality.
 
 ## Structure
 

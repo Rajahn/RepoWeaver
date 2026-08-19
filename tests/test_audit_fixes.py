@@ -7,10 +7,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-from repoweaver.explore import explore
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer, _parsed_file_to_json, file_hash
-from repoweaver.parser.java import JavaParser
+from codecontextfabric.explore import explore
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer, _parsed_file_to_json, file_hash
+from codecontextfabric.parser.java import JavaParser
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 

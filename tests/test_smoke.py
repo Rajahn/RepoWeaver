@@ -1,18 +1,18 @@
 from typer.testing import CliRunner
 
-import repoweaver
-from repoweaver.cli import app
+import codecontextfabric
+from codecontextfabric.cli import app
 
 
 def test_version():
-    assert repoweaver.__version__ == "0.4.0"
+    assert codecontextfabric.__version__ == "0.5.1"
 
 
 def test_cli_version():
     runner = CliRunner()
     result = runner.invoke(app, ["version"])
     assert result.exit_code == 0
-    assert "0.4.0" in result.output
+    assert "0.5.1" in result.output
 
 
 def test_cli_help():

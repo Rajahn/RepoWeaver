@@ -15,9 +15,9 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.explore import explore
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer, load_entry_point_annotations
+from codecontextfabric.explore import explore
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer, load_entry_point_annotations
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -246,6 +246,6 @@ def test_entrypoints_yaml_replace_drops_builtins(tmp_path):
 
 
 def test_entrypoints_yaml_absent_uses_builtin_defaults(tmp_path):
-    from repoweaver.indexer import ENTRY_POINT_ANNOTATIONS
+    from codecontextfabric.indexer import ENTRY_POINT_ANNOTATIONS
 
     assert load_entry_point_annotations(tmp_path) == ENTRY_POINT_ANNOTATIONS

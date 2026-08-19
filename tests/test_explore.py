@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from repoweaver.explore import BLIND_SPOTS, explore
+from codecontextfabric.explore import BLIND_SPOTS, explore
 
 
 def test_explore_not_indexed_returns_error(tmp_path):
     result = explore(query="anything", repo=str(tmp_path))
-    assert result == {"error": "not_indexed", "hint": "run: fabric build"}
+    assert result == {"error": "not_indexed", "hint": "run: ccf build"}
 
 
 def test_explore_understand_returns_slices_and_contract_shape(built_javademo):

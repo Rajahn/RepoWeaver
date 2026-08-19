@@ -1,4 +1,4 @@
-# Schema v1.2 — RepoWeaver Evidence Graph
+# Schema v1.2 — Code Context Fabric Evidence Graph
 
 > Status: **FROZEN v1.2** (2026-08-18) — see [ADR-0001](adr/0001-schema-and-explore-contract-v1.md), [ADR-0002](adr/0002-m2-resolution-and-freshness.md) and [ADR-0003](adr/0003-typed-overlay.md)
 > Rule: once frozen, all downstream tables/queries must migrate in place; no silent drops.
@@ -70,7 +70,7 @@ END;
 ```
 
 **id convention**: `{kind}:{repo_slug}:{file_path}:{qualified_name}`
-Example: `method:repoweaver:src/main/java/com/example/Foo.java:com.example.Foo#bar(String)`
+Example: `method:code-context-fabric:src/main/java/com/example/Foo.java:com.example.Foo#bar(String)`
 
 **Disambiguation rule (v1.1)**: a uniquely resolved relation becomes an
 `edge`; multiple equally valid candidates are stored in `unresolved_reference`

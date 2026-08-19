@@ -1,6 +1,6 @@
 # Benchmark methodology
 
-RepoWeaver treats SOTA alignment as a release gate, not a marketing claim.
+Code Context Fabric treats SOTA alignment as a release gate, not a marketing claim.
 Every metric is generated from a pinned public repository or a checked-in
 fixture, and every missing required metric blocks release.
 
@@ -10,7 +10,7 @@ A graph can make coverage look perfect by connecting every unresolved call to
 every same-named method. Such a graph is useless to an agent: it has high
 recall but near-zero precision.
 
-RepoWeaver therefore calls an edge **resolved** only when:
+Code Context Fabric therefore calls an edge **resolved** only when:
 
 1. `confidence >= 0.5`; and
 2. `ambiguous_candidates == []`.
@@ -60,41 +60,42 @@ semantics, correctness scoring and the gate mechanism without network access.
 ## SOTA references
 
 CodeGraph publishes 93.3% Java cross-file coverage on Gson. We also ran
-CodeGraph 1.5.0 and RepoWeaver 0.2.0 on pinned commit `dae37cf…` with the same
-`gson/src/main/` scope and both endpoints constrained to that scope. Measured
-coverage was 92.59% vs 90.12%. RepoWeaver additionally gates ambiguity at
+CodeGraph 1.5.0 and RepoWeaver 0.2.0 (this project's former name) on pinned
+commit `dae37cf…` with the same `gson/src/main/` scope and both endpoints
+constrained to that scope. Measured coverage was 92.59% vs 90.12%. Code
+Context Fabric additionally gates ambiguity at
 <=10% (measured 6.36%) and fixture precision/recall. The published 93.3% remains
 a directional historical reference; the checked-in same-commit reports are the
 operational comparison.
 
 ## Adapters
 
-- `repoweaver`: full metrics.
+- `ccf`: full metrics.
 - `grep`: query latency and text-volume proxy; no fabricated graph metrics.
 - `codegraph` / `graft`: optional presence detection. Use an explicit external
   command adapter to run locally installed tools.
 - `external:<command>`: command receives `{repo}` and `{workdir}` and must print
   one JSON object matching known metric fields.
 
-RepoWeaver never vendors or copies third-party implementations.
+Code Context Fabric never vendors or copies third-party implementations.
 
 ## Commands
 
 ```bash
-fabric benchmark run \
+ccf benchmark run \
   --repo /path/to/pinned/repo \
   --name gson-candidate \
   --scope-prefix gson/src/main/ \
   --output results/gson.json
 
-fabric benchmark compare \
+ccf benchmark compare \
   --candidate results/gson.json \
   --target benchmarks/sota-targets.yaml
 
-fabric benchmark report \
+ccf benchmark report \
   --input results/gson.json \
   --targets benchmarks/sota-targets.yaml \
   --output results/gson.md
 
-fabric verify --level benchmark
+ccf verify --level benchmark
 ```

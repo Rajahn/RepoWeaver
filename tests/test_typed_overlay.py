@@ -13,11 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.benchmark.metrics import graph_signature
-from repoweaver.graph.store import GraphStore, edge_id
-from repoweaver.indexer import Indexer
-from repoweaver.typed.overlay import run_overlay
-from repoweaver.typed.symbol_map import SkipReason
+from codecontextfabric.benchmark.metrics import graph_signature
+from codecontextfabric.graph.store import GraphStore, edge_id
+from codecontextfabric.indexer import Indexer
+from codecontextfabric.typed.overlay import run_overlay
+from codecontextfabric.typed.symbol_map import SkipReason
 
 FIXTURE = Path(__file__).parent / "fixtures" / "m3typed"
 PKG = "com.example.m3typed"
@@ -186,8 +186,8 @@ def test_unmapped_symbol_statistics_are_recorded_not_guessed(repo: Path) -> None
     # Corrupt one target symbol in a copy of the index bytes so it can never
     # resolve, and confirm the overlay records it as skipped rather than
     # silently mapping it to the wrong node.
-    from repoweaver.typed.scip_proto import decode_index
-    from repoweaver.typed.symbol_map import SymbolMapper
+    from codecontextfabric.typed.scip_proto import decode_index
+    from codecontextfabric.typed.symbol_map import SymbolMapper
 
     index = decode_index((repo / "index.scip").read_bytes())
     with GraphStore(_db(repo)) as store:

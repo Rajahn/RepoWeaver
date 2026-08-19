@@ -4,7 +4,7 @@
 Used as a fallback by scripts/build_scip_fixture.sh when a real scip-java
 binary isn't available (e.g. no network access to GitHub Releases / Maven
 Central in this environment). Hand-encodes protobuf wire bytes matching the
-scip.proto field numbers documented in src/repoweaver/typed/scip_proto.py,
+scip.proto field numbers documented in src/codecontextfabric/typed/scip_proto.py,
 so it exercises the exact same wire format a real scip-java run would
 produce for this fixture's five source files — see
 docs/adr/0003-typed-overlay.md for the field-number mapping and the

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer
 
 
 def test_check_reports_ok_immediately_after_build(built_javademo):

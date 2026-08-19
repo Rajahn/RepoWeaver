@@ -10,9 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from repoweaver.explore import explore
-from repoweaver.graph.store import GraphStore
-from repoweaver.indexer import Indexer, _parsed_file_to_json
+from codecontextfabric.explore import explore
+from codecontextfabric.graph.store import GraphStore
+from codecontextfabric.indexer import Indexer, _parsed_file_to_json
 
 FIXTURE = Path(__file__).parent / "fixtures" / "javademo"
 
@@ -91,7 +91,7 @@ def test_roundtrip_through_store_matches_direct_serialization(
 ) -> None:
     store = GraphStore(":memory:").open()
     try:
-        from repoweaver.parser.java import JavaParser
+        from codecontextfabric.parser.java import JavaParser
 
         pf = JavaParser(built_demo).parse_file(built_demo / "com/example/demo/App.java")
         payload = _parsed_file_to_json(pf)
